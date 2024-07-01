@@ -3,6 +3,9 @@
  *
  * @tags: [
  *  requires_sharding,
+ *  # TODO SERVER-84659: remove the following tag once the old create collection
+ *  # coordinator is fixed
+ *  featureFlagAuthoritativeShardCollection,
  *  # this test swallow expected errors caused by concurrent DDL operations
  *  catches_command_failures,
  *  requires_fcv_80
@@ -99,9 +102,8 @@ export const $config = (function() {
                 // in multi-document transactions.
                 return;
             }
-            if (TestData.runningWithShardStepdowns &&
-                !FeatureFlagUtil.isPresentAndEnabled(db, "TrackUnshardedCollectionsUponCreation")) {
-                // TODO SERVER-90742: Remove the early exit.
+            if (!FeatureFlagUtil.isPresentAndEnabled(db, "TrackUnshardedCollectionsUponCreation")) {
+                // TODO SERVER-90862 (or SERVER-90742): Remove the early exit.
                 return;
             }
             const coll = getRandomCollection(db);
