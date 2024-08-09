@@ -357,8 +357,9 @@ CollectionImpl::CollectionImpl(OperationContext* opCtx,
       _uuid(metadata->options.uuid.value()),
       _shared(
           std::make_shared<SharedState>(opCtx, this, std::move(recordStore), metadata->options)),
-      _metadata(std::move(metadata)),
-      _indexCatalog(std::make_unique<IndexCatalogImpl>()) {}
+      _indexCatalog(std::make_unique<IndexCatalogImpl>()) {
+    _setMetadata(std::move(metadata));
+}
 
 CollectionImpl::~CollectionImpl() = default;
 
@@ -518,6 +519,34 @@ void CollectionImpl::_initCommon(OperationContext* opCtx) {
     }
 }
 
+void CollectionImpl::_setMetadata(
+    std::shared_ptr<BSONCollectionCatalogEntry::MetaData>&& metadata) {
+    if (metadata->options.timeseries) {
+        // If present, reuse the storageEngine options to work around the issue described in
+        // SERVER-91194.
+        boost::optional<bool> optBackwardsCompatiblesMayHaveMixedSchemaDataFlag =
+            getFlagFromStorageEngineBson(
+                metadata->options.storageEngine,
+                backwards_compatible_collection_options::kTimeseriesBucketsMayHaveMixedSchemaData);
+        if (optBackwardsCompatiblesMayHaveMixedSchemaDataFlag.has_value()) {
+            metadata->timeseriesBucketsMayHaveMixedSchemaData =
+                *optBackwardsCompatiblesMayHaveMixedSchemaDataFlag;
+        }
+
+        // If present, reuse storageEngine options to work around the issue described in
+        // SERVER-91193
+        boost::optional<bool> optBackwardsCompatibleParametersHaveChangedFlag =
+            getFlagFromStorageEngineBson(
+                metadata->options.storageEngine,
+                backwards_compatible_collection_options::kTimeseriesBucketingParametersHaveChanged);
+        if (optBackwardsCompatibleParametersHaveChangedFlag.has_value()) {
+            metadata->timeseriesBucketingParametersHaveChanged =
+                *optBackwardsCompatibleParametersHaveChangedFlag;
+        }
+    }
+    _metadata = std::move(metadata);
+}
+
 bool CollectionImpl::isInitialized() const {
     return _initialized;
 }
@@ -545,6 +574,7 @@ bool CollectionImpl::requiresIdIndex() const {
 
 std::unique_ptr<SeekableRecordCursor> CollectionImpl::getCursor(OperationContext* opCtx,
                                                                 bool forward) const {
+    dassert(shard_role_details::getLocker(opCtx)->isReadLocked());
     if (usesCappedSnapshots() && forward) {
         if (shard_role_details::getRecoveryUnit(opCtx)->isActive()) {
             auto snapshot =
@@ -832,16 +862,6 @@ boost::optional<bool> CollectionImpl::getTimeseriesBucketsMayHaveMixedSchemaData
     if (!getTimeseriesOptions()) {
         return boost::none;
     }
-
-    // If present, reuse storageEngine options to work around the issue described in SERVER-91194
-    boost::optional<bool> optBackwardsCompatibleFlag = getFlagFromStorageEngineBson(
-        _metadata->options.storageEngine,
-        backwards_compatible_collection_options::kTimeseriesBucketsMayHaveMixedSchemaData);
-    if (optBackwardsCompatibleFlag) {
-        return *optBackwardsCompatibleFlag;
-    }
-
-    // Else, fallback to legacy parameter
     return _metadata->timeseriesBucketsMayHaveMixedSchemaData;
 }
 
@@ -862,14 +882,6 @@ boost::optional<bool> CollectionImpl::timeseriesBucketingParametersHaveChanged()
         // option upon chunk migrations, movePrimary, resharding, initial sync or backup/restore
         // (SERVER-91193).
         return true;
-    }
-
-    // If present, reuse storageEngine options to work around the issue described in SERVER-91193
-    boost::optional<bool> optBackwardsCompatibleFlag = getFlagFromStorageEngineBson(
-        _metadata->options.storageEngine,
-        backwards_compatible_collection_options::kTimeseriesBucketingParametersHaveChanged);
-    if (optBackwardsCompatibleFlag) {
-        return *optBackwardsCompatibleFlag;
     }
 
     // Else, fallback to legacy parameter.
@@ -1603,18 +1615,15 @@ Status CollectionImpl::prepareForIndexBuild(OperationContext* opCtx,
               str::stream() << "index " << imd.nameStringData()
                             << " is already in current metadata: " << _metadata->toBSON());
 
-    if (getTimeseriesOptions() &&
+    if (getTimeseriesBucketsMayHaveMixedSchemaData() &&
         timeseries::doesBucketsIndexIncludeMeasurement(
             opCtx, ns(), *getTimeseriesOptions(), spec->infoObj())) {
-        invariant(_metadata->timeseriesBucketsMayHaveMixedSchemaData);
-        if (*_metadata->timeseriesBucketsMayHaveMixedSchemaData) {
-            LOGV2(6057502,
-                  "Detected that this time-series collection may have mixed-schema data. "
-                  "Attempting to build the index.",
-                  logAttrs(ns()),
-                  logAttrs(uuid()),
-                  "spec"_attr = spec->infoObj());
-        }
+        LOGV2(6057502,
+              "Detected that this time-series collection may have mixed-schema data. "
+              "Attempting to build the index.",
+              logAttrs(ns()),
+              logAttrs(uuid()),
+              "spec"_attr = spec->infoObj());
     }
 
     _writeMetadata(
@@ -1985,7 +1994,7 @@ bool CollectionImpl::isIndexReady(StringData indexName) const {
 void CollectionImpl::replaceMetadata(OperationContext* opCtx,
                                      std::shared_ptr<BSONCollectionCatalogEntry::MetaData> md) {
     DurableCatalog::get(opCtx)->putMetaData(opCtx, getCatalogId(), *md);
-    _metadata = std::move(md);
+    _setMetadata(std::move(md));
 }
 
 bool CollectionImpl::isMetadataEqual(const BSONObj& otherMetadata) const {

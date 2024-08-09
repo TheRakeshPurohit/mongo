@@ -95,6 +95,10 @@ last-continuous:
       ticket: SERVER-89664
     - test_file: jstests/sharding/non_transaction_snapshot_reads_retry.js
       ticket: SERVER-89664
+    - test_file: jstests/core/timeseries/timeseries_collation.js
+      ticket: SERVER_89698
+    - test_file: jstests/core/timeseries/timeseries_index_partial.js
+      ticket: SERVER_89698
     - test_file: jstests/core/index/express_write.js
       ticket: SERVER-83760
     - test_file: jstests/core/index/express_write_explicit_coll_creation.js
@@ -225,8 +229,6 @@ last-continuous:
       ticket: SERVER-84359
     - test_file: jstests/core/index/geo/geo_2d_point_near_zero.js
       ticket: SERVER-92930
-    - test_file: jstests/core/query/plan_cache/elem_match_index_diff_types.js
-      ticket: SERVER-92806
     - test_file: jstests/core/timeseries/timeseries_insert_mixed_schema_bucket.js
       ticket: SERVER-93099
     - test_file: jstests/core/timeseries/timeseries_update_mixed_schema_bucket.js
@@ -310,6 +312,10 @@ last-lts:
       ticket: SERVER-89664
     - test_file: jstests/sharding/non_transaction_snapshot_reads_retry.js
       ticket: SERVER-89664
+    - test_file: jstests/core/timeseries/timeseries_collation.js
+      ticket: SERVER_89698
+    - test_file: jstests/core/timeseries/timeseries_index_partial.js
+      ticket: SERVER_89698
     - test_file: jstests/core/index/express_write.js
       ticket: SERVER-83760
     - test_file: jstests/core/index/express_write_explicit_coll_creation.js
@@ -470,8 +476,6 @@ last-lts:
       ticket: SERVER-84359
     - test_file: jstests/core/index/geo/geo_2d_point_near_zero.js
       ticket: SERVER-92930
-    - test_file: jstests/core/query/plan_cache/elem_match_index_diff_types.js
-      ticket: SERVER-92806
     - test_file: jstests/core/timeseries/timeseries_insert_mixed_schema_bucket.js
       ticket: SERVER-93099
     - test_file: jstests/core/timeseries/timeseries_update_mixed_schema_bucket.js
