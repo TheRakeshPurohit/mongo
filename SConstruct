@@ -1740,9 +1740,9 @@ env.AddMethod(lambda env, name, **kwargs: add_option(name, **kwargs), "AddOption
 env.Prepend(CCFLAGS="$TOOLCHAIN_CCFLAGS")
 env.Prepend(LINKFLAGS="$TOOLCHAIN_LINKFLAGS")
 
-if not mongo_toolchain_execroot:
-    os.environ["CC"] = env.get("CC", os.environ.get("CC"))
-    os.environ["CXX"] = env.get("CXX", os.environ.get("CXX"))
+if ARGUMENTS.get("CC") and ARGUMENTS.get("CXX"):
+    os.environ["CC"] = env.get("CC")
+    os.environ["CXX"] = env.get("CXX")
     os.environ["USE_NATIVE_TOOLCHAIN"] = "1"
 
 # Early load to setup env functions
@@ -6640,6 +6640,18 @@ if get_option("bazel-includes-info"):
     env.Tool("bazel_includes_info")
 
 env.WaitForBazel()
+
+if str(env["LIBDEPS_GRAPH_ALIAS"]) in COMMAND_LINE_TARGETS:
+    # The find_symbols binary is a small fast C binary which will extract the missing
+    # symbols from the target library, and discover what linked libraries supply it. This
+    # setups the binary to be built.
+    find_symbols_env = env.Clone()
+    find_symbols_env.VariantDir("${BUILD_DIR}/libdeps", "buildscripts/libdeps", duplicate=0)
+    find_symbols_env.Program(
+        target="${BUILD_DIR}/libdeps/find_symbols",
+        source=["${BUILD_DIR}/libdeps/find_symbols.c"],
+        CFLAGS=["-O3"],
+    )
 
 env.SConscript(
     must_exist=1,

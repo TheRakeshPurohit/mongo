@@ -70,7 +70,5 @@ private:
     ClientStrandPtr _clientStrand;
     transport::TransportLayerMock _transportLayer;
     std::shared_ptr<transport::Session> _session;
-    AuthzManagerExternalStateMock* _externalState;
-    AuthorizationManagerImpl* _authzManager;
 };
 }  // namespace mongo

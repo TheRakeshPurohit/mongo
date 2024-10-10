@@ -28,10 +28,15 @@ build --experimental_reuse_sandbox_directories
 # targets have been converted (i.e. unittest binaries) and we can BWOB, remote linking should be faster
 # in those cases:
 build --strategy=CppLink=local
+build --modify_execution_info=CppLink=+no-remote-cache
 build --strategy=CppArchive=local
+build --modify_execution_info=CppArchive=+no-remote-cache
 build --strategy=SolibSymlink=local
+build --modify_execution_info=SolibSymlink=+no-remote-cache
 build --strategy=ExtractDebugInfo=local
+build --modify_execution_info=ExtractDebugInfo=+no-remote-cache
 build --strategy=StripDebugInfo=local
+build --modify_execution_info=StripDebugInfo=+no-remote-cache
 
 # Aliases for config flags
 build --flag_alias=linkstatic=//bazel/config:linkstatic
@@ -158,6 +163,11 @@ build:local --grpc_keepalive_time=0s
 build:local --legacy_important_outputs
 build:local --jobs=auto
 
+# Disable remote execution but keep remote cache enabled
+--config=no-remote-exec
+common:no-remote-exec --remote_executor=
+common:no-remote-exec --jobs=auto
+
 # Disable remote execution and caching for public releases
 --config=public-release
 build:public-release --remote_executor=
@@ -190,3 +200,6 @@ try-import %workspace%/.bazelrc.evergreen_engflow_creds
 
 # Evergreen settings, ex. in evergreen this will set the key/cert options for access to the cluster
 try-import %workspace%/.bazelrc.evergreen
+
+# local default dev settings
+try-import %workspace%/.bazelrc.workstation

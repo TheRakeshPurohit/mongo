@@ -416,9 +416,11 @@ env.Library(
         "service_context_test_fixture",
     ],
     LIBDEPS_PRIVATE=[
+        "$BUILD_DIR/mongo/db/repl/replmocks",
         "$BUILD_DIR/mongo/util/clock_source_mock",
         "$BUILD_DIR/mongo/util/periodic_runner_factory",
         "auth/auth_impl_internal",
+        "auth/authserver",
         "catalog/catalog_impl",
         "commands/mongod",
         "index_builds_coordinator_mongod",
@@ -918,6 +920,7 @@ if wiredtiger:
         ],
         LIBDEPS=[
             "$BUILD_DIR/mongo/db/prepare_conflict_tracker",
+            "$BUILD_DIR/mongo/db/service_context_d",
             "$BUILD_DIR/mongo/transport/transport_layer_mock",
             "auth/auth",
             "auth/authmocks",
@@ -1084,6 +1087,7 @@ if wiredtiger:
             "repl/replica_set_aware_service",
             "repl/replmocks",
             "repl/storage_interface_impl",
+            "service_context_d",
             "service_context_d_test_fixture",
             "session/kill_sessions_local",
             "session/logical_session_cache_impl",
@@ -1224,6 +1228,37 @@ env.Benchmark(
     LIBDEPS=[
         "service_context_non_d",
         "shard_role_api",
+    ],
+)
+
+env.Library(
+    target="service_entry_point_test_fixture",
+    source=[
+        "service_entry_point_test_fixture.cpp",
+    ],
+    LIBDEPS=[
+        "$BUILD_DIR/mongo/util/clock_source_mock",
+        "read_write_concern_defaults_mock",
+        "service_context_test_fixture",
+    ],
+)
+
+env.CppUnitTest(
+    target="service_entry_point_shard_role_test",
+    source=[
+        "service_entry_point_shard_role_test.cpp",
+    ],
+    LIBDEPS=[
+        "$BUILD_DIR/mongo/rpc/client_metadata",
+        "$BUILD_DIR/mongo/transport/message_compressor",
+        "$BUILD_DIR/mongo/transport/transport_layer_mock",
+        "auth/authserver",
+        "repl/hello_command",
+        "repl/replmocks",
+        "service_context_d",
+        "service_entry_point_test_fixture",
+        "storage/wiredtiger/storage_wiredtiger",
+        "vector_clock_mongod",
     ],
 )
 

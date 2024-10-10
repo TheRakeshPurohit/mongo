@@ -21,6 +21,8 @@ from retry.api import retry_call
 import sys
 from buildscripts.install_bazel import install_bazel
 import atexit
+import socket
+import git
 
 import SCons
 from SCons.Script import ARGUMENTS
@@ -550,10 +552,8 @@ def generate_bazel_info_for_ninja(env: SCons.Environment.Environment) -> None:
         "bazel_cmd": Globals.bazel_base_build_command,
         "compiledb_cmd": [Globals.bazel_executable, "run"]
         + env["BAZEL_FLAGS_STR"]
-        + ["--features=-thin_archive"]
         + ["//:compiledb", "--"]
-        + env["BAZEL_FLAGS_STR"]
-        + ["--features=-thin_archive"],
+        + env["BAZEL_FLAGS_STR"],
         "defaults": [str(t) for t in SCons.Script.DEFAULT_TARGETS],
         "targets": Globals.scons2bazel_targets,
         "CC": env.get("CC", ""),
@@ -749,32 +749,13 @@ def prefetch_toolchain(env):
         os.makedirs(bazel_bin_dir)
     Globals.bazel_executable = install_bazel(bazel_bin_dir)
     if platform.system() == "Linux" and not ARGUMENTS.get("CC") and not ARGUMENTS.get("CXX"):
-        exec_root = ""
-
-        try:
-            results = retry_call(
-                subprocess.run,
-                [[Globals.bazel_executable, "info"]],
-                fkwargs={"capture_output": True, "text": True},
-                tries=Globals.max_retry_attempts,
-                exceptions=(subprocess.CalledProcessError,),
-            )
-        except subprocess.CalledProcessError as ex:
-            print("ERROR: Finding bazel exec root.")
-            print(ex)
-            print("Please ask about this in #ask-devprod-build slack channel.")
-            sys.exit(1)
-
-        output_base_str = "output_base: "
-        for line in results.stdout.split("\n"):
-            if line.startswith(output_base_str):
-                exec_root = line[len(output_base_str) :].strip()
+        exec_root = f'bazel-{os.path.basename(env.Dir("#").abspath)}'
         if exec_root and not os.path.exists(f"{exec_root}/external/mongo_toolchain"):
             print("Prefetch the mongo toolchain...")
             try:
-                results = retry_call(
+                retry_call(
                     subprocess.run,
-                    [[Globals.bazel_executable, "fetch", "@mongo_toolchain"]],
+                    [[Globals.bazel_executable, "build", "@mongo_toolchain"]],
                     tries=Globals.max_retry_attempts,
                     exceptions=(subprocess.CalledProcessError,),
                 )
@@ -783,6 +764,7 @@ def prefetch_toolchain(env):
                 print(ex)
                 print("Please ask about this in #ask-devprod-build slack channel.")
                 sys.exit(1)
+
         return exec_root
 
 
@@ -790,6 +772,7 @@ def prefetch_toolchain(env):
 def exists(env: SCons.Environment.Environment) -> bool:
     # === Bazelisk ===
 
+    write_workstation_bazelrc()
     env.AddMethod(prefetch_toolchain, "PrefetchToolchain")
     env.AddMethod(load_bazel_builders, "LoadBazelBuilders")
     return True
@@ -830,6 +813,33 @@ def handle_bazel_program_exception(env, target, outputs):
                     "bazel_output": bazel_output_file.replace("\\", "/"),
                 }
     return bazel_program
+
+
+def write_workstation_bazelrc():
+    if os.environ.get("CI") is None:
+        workstation_file = ".bazelrc.workstation"
+        existing_hash = ""
+        if os.path.exists(workstation_file):
+            with open(workstation_file) as f:
+                existing_hash = hashlib.md5(f.read().encode()).hexdigest()
+
+        repo = git.Repo()
+        status = "clean" if repo.head.commit.diff(None) is None else "modified"
+        bazelrc_contents = f"""\
+# Generated file, do not modify
+common --bes_keywords=developerBuild=True
+common --bes_keywords=workstation={socket.gethostname()}
+common --bes_keywords=engflow:BuildScmRemote={repo.remotes.origin.url}
+common --bes_keywords=engflow:BuildScmBranch={repo.active_branch.name}
+common --bes_keywords=engflow:BuildScmRevision={repo.commit("HEAD")}
+common --bes_keywords=engflow:BuildScmStatus={status}
+    """
+
+        current_hash = hashlib.md5(bazelrc_contents.encode()).hexdigest()
+        if existing_hash != current_hash:
+            print(f"Generating new {workstation_file} file...")
+            with open(workstation_file, "w") as f:
+                f.write(bazelrc_contents)
 
 
 def generate(env: SCons.Environment.Environment) -> None:
@@ -1042,10 +1052,6 @@ def generate(env: SCons.Environment.Environment) -> None:
         action=BazelCopyOutputsAction,
         emitter=SCons.Builder.ListEmitter([bazel_target_emitter]),
     )
-
-    # TODO(SERVER-94605): remove when Windows temp directory is cleared between task runs
-    if normalized_os == "windows" and os.environ.get("CI"):
-        subprocess.run(["bazel", "clean", "--expunge"])
 
     cmd = (
         ["aquery"]
