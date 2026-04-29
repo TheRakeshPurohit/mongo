@@ -337,6 +337,8 @@ public:
 
     void setContainerWriteBehavior(ContainerWriteBehavior containerWriteBehavior);
 
+    void setIsResumable(bool isResumable);
+
     /**
      * Appends the current state information of the index build to the builder.
      */
@@ -397,6 +399,8 @@ private:
     IndexBuildMethodEnum _method = IndexBuildMethodEnum::kHybrid;
 
     ContainerWriteBehavior _containerWriteBehavior = ContainerWriteBehavior::kDoNotReplicate;
+
+    bool _isResumable = false;
 
     bool _ignoreUnique = false;
 

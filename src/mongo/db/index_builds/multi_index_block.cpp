@@ -78,7 +78,6 @@
 #include "mongo/db/timeseries/timeseries_constants.h"
 #include "mongo/db/timeseries/timeseries_gen.h"
 #include "mongo/db/timeseries/timeseries_index_schema_conversion_functions.h"
-#include "mongo/db/version_context.h"
 #include "mongo/logv2/log.h"
 #include "mongo/otel/metrics/metric_unit.h"
 #include "mongo/otel/metrics/metrics_counter.h"
@@ -381,10 +380,7 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlock::init(
     // When we're replicating container writes, we need to create the table immediately since that
     // means its creation is being replicated by the start of the index build. Otherwise, we can
     // wait to create it until its first use in case it's not needed.
-    if (_containerWriteBehavior == ContainerWriteBehavior::kReplicate &&
-        feature_flags::gResumablePrimaryDrivenIndexBuilds.isEnabledUseLastLTSFCVWhenUninitialized(
-            VersionContext::getDecoration(opCtx),
-            serverGlobalParams.featureCompatibility.acquireFCVSnapshot())) {
+    if (_containerWriteBehavior == ContainerWriteBehavior::kReplicate && _isResumable) {
         _resumeStateTempRecordStore.emplace(opCtx,
                                             ident::generateNewIndexBuildIdent(*_buildUUID),
                                             LazyRecordStore::CreateMode::immediate);
@@ -1459,6 +1455,10 @@ void MultiIndexBlock::setIndexBuildMethod(IndexBuildMethodEnum indexBuildMethod)
 
 void MultiIndexBlock::setContainerWriteBehavior(ContainerWriteBehavior containerWriteBehavior) {
     _containerWriteBehavior = containerWriteBehavior;
+}
+
+void MultiIndexBlock::setIsResumable(bool isResumable) {
+    _isResumable = isResumable;
 }
 
 void MultiIndexBlock::appendBuildInfo(BSONObjBuilder* builder) const {

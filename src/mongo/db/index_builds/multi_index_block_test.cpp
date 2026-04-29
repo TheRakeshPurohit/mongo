@@ -823,6 +823,7 @@ TEST_F(MultiIndexBlockTest, CommitDropsResumablePrimaryDrivenIndexBuildTable) {
     const auto buildUUID = UUID::gen();
     indexer->setBuildUUID(buildUUID);
     indexer->setContainerWriteBehavior(ContainerWriteBehavior::kReplicate);
+    indexer->setIsResumable(true);
 
     AutoGetCollection autoColl(operationContext(), getNSS(), MODE_X);
     CollectionWriter coll(operationContext(), autoColl);
@@ -862,6 +863,43 @@ TEST_F(MultiIndexBlockTest, CommitDropsResumablePrimaryDrivenIndexBuildTable) {
         *shard_role_details::getRecoveryUnit(operationContext()), indexBuildIdent));
 }
 
+// When the build is not resumable, MultiIndexBlock::init must NOT eagerly create the per-build
+// internal index build table — even if the container-write behavior is kReplicate.
+TEST_F(MultiIndexBlockTest, InitSkipsResumablePrimaryDrivenIndexBuildTableWhenNotResumable) {
+    RAIIServerParameterControllerForTest pdibEnabled{"featureFlagPrimaryDrivenIndexBuilds", true};
+
+    auto indexer = getIndexer();
+    const auto buildUUID = UUID::gen();
+    indexer->setBuildUUID(buildUUID);
+    indexer->setContainerWriteBehavior(ContainerWriteBehavior::kReplicate);
+    // Intentionally leave _isResumable at its default (false).
+
+    AutoGetCollection autoColl(operationContext(), getNSS(), MODE_X);
+    CollectionWriter coll(operationContext(), autoColl);
+
+    auto storageEngine = operationContext()->getServiceContext()->getStorageEngine();
+    auto indexBuildInfo =
+        IndexBuildInfo(BSON("key" << BSON("a" << 1) << "name"
+                                  << "a_1"
+                                  << "v" << static_cast<int>(IndexConfig::kLatestIndexVersion)),
+                       "index-1",
+                       *storageEngine);
+
+    auto specs = unittest::assertGet(indexer->init(operationContext(),
+                                                   coll,
+                                                   {indexBuildInfo},
+                                                   MultiIndexBlock::kNoopOnInitFn,
+                                                   MultiIndexBlock::InitMode::SteadyState,
+                                                   boost::none));
+    ASSERT_EQUALS(1U, specs.size());
+
+    const auto indexBuildIdent = ident::generateNewIndexBuildIdent(buildUUID);
+    ASSERT_FALSE(storageEngine->getEngine()->hasIdent(
+        *shard_role_details::getRecoveryUnit(operationContext()), indexBuildIdent));
+
+    indexer->abortIndexBuild(operationContext(), coll, MultiIndexBlock::kNoopOnCleanUpFn);
+}
+
 // With resumable primary-driven index builds enabled, MultiIndexBlock::init must create the
 // per-build internal WT table whose ident matches ident::generateNewIndexBuildIdent(buildUUID),
 // and MultiIndexBlock::abort must drop it.
@@ -874,6 +912,7 @@ TEST_F(MultiIndexBlockTest, AbortDropsResumablePrimaryDrivenIndexBuildTable) {
     const auto buildUUID = UUID::gen();
     indexer->setBuildUUID(buildUUID);
     indexer->setContainerWriteBehavior(ContainerWriteBehavior::kReplicate);
+    indexer->setIsResumable(true);
 
     AutoGetCollection autoColl(operationContext(), getNSS(), MODE_X);
     CollectionWriter coll(operationContext(), autoColl);
@@ -1179,6 +1218,7 @@ KReplicateBuildHandle setUpKReplicatePrimaryDrivenBuild(OperationContext* opCtx,
     indexer->setBuildUUID(buildUUID);
     indexer->setIndexBuildMethod(IndexBuildMethodEnum::kPrimaryDriven);
     indexer->setContainerWriteBehavior(ContainerWriteBehavior::kReplicate);
+    indexer->setIsResumable(true);
 
     {
         WriteUnitOfWork wuow(opCtx);
