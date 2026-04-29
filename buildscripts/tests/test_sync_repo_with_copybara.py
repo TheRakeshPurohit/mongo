@@ -2207,7 +2207,7 @@ class TestMainWorkflow(unittest.TestCase):
             "]\n"
         )
 
-        def run_command_side_effect(command):
+        def run_command_side_effect(command, **kwargs):
             if command.startswith("git init "):
                 return ""
             if "fetch --depth 1" in command:
@@ -2311,7 +2311,7 @@ class TestMainWorkflow(unittest.TestCase):
     ):
         mock_get_remote_branch_head.return_value = "configsha123"
 
-        def run_command_side_effect(command):
+        def run_command_side_effect(command, **kwargs):
             if command.startswith("git init "):
                 return ""
             if "fetch --depth 1" in command:
@@ -2346,7 +2346,7 @@ class TestMainWorkflow(unittest.TestCase):
         mock_get_remote_branch_head.return_value = "configsha123"
         local_runner_contents = Path(sync_repo_with_copybara.__file__).resolve().read_text()
 
-        def run_command_side_effect(command):
+        def run_command_side_effect(command, **kwargs):
             if command.startswith("git init "):
                 return ""
             if "fetch --depth 1" in command:
@@ -2867,6 +2867,62 @@ class TestRedactSecrets(unittest.TestCase):
         finally:
             sync_repo_with_copybara.REDACTED_STRINGS.clear()
             sync_repo_with_copybara.REDACTED_STRINGS.extend(original_secrets)
+
+    def test_read_git_file_returns_unredacted_source_text(self):
+        source_text = (
+            'url = repo_url.replace("https://github.com", '
+            'f"https://x-access-token:{token}@github.com", 1)\n'
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = Path(tmpdir)
+            git_env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
+            subprocess.run(
+                ["git", "init"],
+                cwd=repo_dir,
+                check=True,
+                capture_output=True,
+                env=git_env,
+            )
+            subprocess.run(
+                ["git", "config", "--local", "user.email", "test@example.com"],
+                cwd=repo_dir,
+                check=True,
+                capture_output=True,
+                env=git_env,
+            )
+            subprocess.run(
+                ["git", "config", "--local", "user.name", "Test User"],
+                cwd=repo_dir,
+                check=True,
+                capture_output=True,
+                env=git_env,
+            )
+            source_path = repo_dir / "helper.py"
+            source_path.write_text(source_text)
+            subprocess.run(
+                ["git", "add", "helper.py"],
+                cwd=repo_dir,
+                check=True,
+                capture_output=True,
+                env=git_env,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "add helper"],
+                cwd=repo_dir,
+                check=True,
+                capture_output=True,
+                env=git_env,
+            )
+
+            stdout = io.StringIO()
+            os.chdir(Path(__file__).resolve().parents[2])
+            with redirect_stdout(stdout):
+                result = sync_repo_with_copybara.read_git_file(repo_dir, "HEAD", "helper.py")
+
+        self.assertEqual(source_text, result)
+        self.assertIn("https://x-access-token:<REDACTED>@github.com", stdout.getvalue())
+        self.assertNotIn("https://x-access-token:{token}@github.com", stdout.getvalue())
 
 
 class TestExtractSkyExcludedPatternsRejectsDuplicates(unittest.TestCase):
