@@ -357,9 +357,7 @@ private:
         const IndexCatalogEntry* entryForScan = nullptr;
     };
 
-    void _writeStateToDisk(OperationContext* opCtx,
-                           const CollectionPtr& collection,
-                           RecordStore& rs) const;
+    void _writeStateToDisk(OperationContext* opCtx);
 
     /**
      * Performs a container write to persist build state to the resumable table.

@@ -1484,7 +1484,7 @@ void MultiIndexBlock::persistResumeState(OperationContext* opCtx,
     if (useContainerWrite) {
         _writeStateToContainer(opCtx);
     } else {
-        _writeStateToDisk(opCtx, collection, _resumeStateTempRecordStore->getOrCreateTable(opCtx));
+        _writeStateToDisk(opCtx);
     }
 }
 
@@ -1519,17 +1519,15 @@ void MultiIndexBlock::abortWithoutCleanup(OperationContext* opCtx,
         if (useContainerWrite) {
             _writeStateToContainer(opCtx);
         } else {
-            _writeStateToDisk(
-                opCtx, collection, _resumeStateTempRecordStore->getOrCreateTable(opCtx));
+            _writeStateToDisk(opCtx);
         }
     }
 
     _buildIsCleanedUp = true;
 }
 
-void MultiIndexBlock::_writeStateToDisk(OperationContext* opCtx,
-                                        const CollectionPtr& collection,
-                                        RecordStore& rs) const {
+void MultiIndexBlock::_writeStateToDisk(OperationContext* opCtx) {
+    auto& rs = _resumeStateTempRecordStore->getOrCreateTable(opCtx);
     auto obj = _constructStateObject();
 
     WriteUnitOfWork wuow(opCtx);
@@ -1540,7 +1538,6 @@ void MultiIndexBlock::_writeStateToDisk(OperationContext* opCtx,
                     "Index build: failed to truncate temporary record store for resumable state",
                     "buildUUID"_attr = _buildUUID,
                     "collectionUUID"_attr = _collectionUUID,
-                    logAttrs(collection->ns()),
                     "details"_attr = obj,
                     "error"_attr = truncateStatus);
         dassert(truncateStatus,
@@ -1559,7 +1556,6 @@ void MultiIndexBlock::_writeStateToDisk(OperationContext* opCtx,
                     "Index build: failed to write resumable state to disk",
                     "buildUUID"_attr = _buildUUID,
                     "collectionUUID"_attr = _collectionUUID,
-                    logAttrs(collection->ns()),
                     "details"_attr = obj,
                     "error"_attr = insertStatus.getStatus());
         dassert(insertStatus,
@@ -1574,7 +1570,6 @@ void MultiIndexBlock::_writeStateToDisk(OperationContext* opCtx,
           "Index build: wrote resumable state to disk",
           "buildUUID"_attr = _buildUUID,
           "collectionUUID"_attr = _collectionUUID,
-          logAttrs(collection->ns()),
           "details"_attr = obj);
 }
 
