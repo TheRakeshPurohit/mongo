@@ -42,10 +42,6 @@ function makeNss(dbName, collName) {
     return {db: dbName, coll: collName};
 }
 
-function createDbCmdOnShard(dbName, shard) {
-    return new CreateDatabaseCommand(dbName, null, null, null, shard);
-}
-
 function withChangeStreamTest(db, fn) {
     const cst = new ChangeStreamTest(db);
     try {
@@ -295,8 +291,11 @@ for (const [downgradeFCV, testHelper] of crossProduct(
                     }
 
                     return db1Name == db2Name
-                        ? [createDbCmdOnShard(db1Name, db1PrimaryShard)]
-                        : [createDbCmdOnShard(db1Name, db1PrimaryShard), createDbCmdOnShard(db2Name, db2PrimaryShard)];
+                        ? [new CreateDatabaseCommand({dbName: db1Name, primaryShard: db1PrimaryShard})]
+                        : [
+                              new CreateDatabaseCommand({dbName: db1Name, primaryShard: db1PrimaryShard}),
+                              new CreateDatabaseCommand({dbName: db2Name, primaryShard: db2PrimaryShard}),
+                          ];
                 })();
 
                 const createTs1CollCmd = new CreateTimeseriesCollectionCommand({
@@ -621,8 +620,11 @@ for (const [downgradeFCV, testHelper] of crossProduct(
                     }
 
                     return db1Name == db2Name
-                        ? [createDbCmdOnShard(db1Name, db1PrimaryShard)]
-                        : [createDbCmdOnShard(db1Name, db1PrimaryShard), createDbCmdOnShard(db2Name, db2PrimaryShard)];
+                        ? [new CreateDatabaseCommand({dbName: db1Name, primaryShard: db1PrimaryShard})]
+                        : [
+                              new CreateDatabaseCommand({dbName: db1Name, primaryShard: db1PrimaryShard}),
+                              new CreateDatabaseCommand({dbName: db2Name, primaryShard: db2PrimaryShard}),
+                          ];
                 })();
 
                 const createTs1CollCmd = new CreateTimeseriesCollectionCommand({

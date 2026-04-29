@@ -269,7 +269,7 @@ function ensureDatabasesExist(writerDefs, mongos, fsmShards) {
         if (startState !== State.DATABASE_ABSENT && !createdDbs.has(w.dbName)) {
             createdDbs.add(w.dbName);
             mongos.getDB(w.dbName).dropDatabase();
-            new CreateDatabaseCommand(w.dbName, w.collName, fsmShards).execute(mongos);
+            new CreateDatabaseCommand({dbName: w.dbName, shardSet: fsmShards}).execute(mongos);
         }
     }
 }
