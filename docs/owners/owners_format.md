@@ -33,8 +33,11 @@ programmatically to, for example, generate a report of all the files owned by a 
 even though that team has nominated specific engineers as approvers.
 
 `options` are not required and are various options about how to use this OWNERS.yml file. Currently
-there is only a single option `no_parent_owners` which is defaulted to false. If this option is set
-to true it will stop upwards OWNERS resolution.
+there are two options:
+
+- `no_parent_owners`, which defaults to false. If set to true it stops upwards OWNERS resolution.
+- `no_auto_approver`, which defaults to false. If set to true it prevents the generated `CODEOWNERS`
+  entry for this `OWNERS.yml` file from automatically including `@svc-auto-approve-bot`.
 
 ### Example file
 
@@ -70,6 +73,7 @@ filters: # List of all filters
       - bazel-approvers
 options: # All options for this file
   no_parent_owners: false # See above for no_parent_owners. Defaulted to false so this line is not needed.
+  no_auto_approver: false # Prevents auto-adding @svc-auto-approve-bot for this OWNERS file.
 ```
 
 ### Filter examples

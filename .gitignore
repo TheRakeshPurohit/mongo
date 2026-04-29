@@ -17,6 +17,7 @@
 /.tmp
 !/.tmp/_placeholder_
 venv
+/buildscripts/copybara/copybara_path_rules.bara.sky
 
 *~
 *.test_iwyu.h
