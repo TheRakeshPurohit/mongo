@@ -2312,6 +2312,9 @@ TEST_F(ReshardingRecipientServiceTest, SkipsDuplicateOplogEntryOnRecoveryInStric
     TestOptions testOptions{.isAlsoDonor = false, .performVerification = true};
     setupFeatureFlags(testOptions);
 
+    PauseDuringStateTransitions stateTransitionsGuard{controller(),
+                                                      RecipientStateEnum::kStrictConsistency};
+
     auto doc = makeRecipientDocument(testOptions);
     auto instanceId =
         BSON(ReshardingRecipientDocument::kReshardingUUIDFieldName << doc.getReshardingUUID());
@@ -2324,6 +2327,10 @@ TEST_F(ReshardingRecipientServiceTest, SkipsDuplicateOplogEntryOnRecoveryInStric
     notifyToStartCloning(rawOpCtx, *recipient, doc);
     awaitChangeStreamsMonitorStarted(opCtx.get(), *recipient, doc);
     notifyCriticalSectionStarted(opCtx.get(), *recipient, doc);
+
+    // Wait for state transition to ensure writeToCollection documents are written
+    stateTransitionsGuard.wait(RecipientStateEnum::kStrictConsistency);
+    stateTransitionsGuard.unset(RecipientStateEnum::kStrictConsistency);
 
     // Wait for the change streams monitor to complete — this proves the oplog entry was written
     // on the normal path.
