@@ -286,6 +286,11 @@ bool canJoinPredicateIncludeArrays(const pipeline::dependency_graph::DependencyG
 }  // namespace
 
 bool AggJoinModel::pipelineEligibleForJoinReordering(const Pipeline& pipeline) {
+    // We don't support non-simple collations.
+    if (!CollatorInterface::isSimpleCollator(pipeline.getContext()->getCollator())) {
+        return false;
+    }
+
     // Pipelines starting with $geoNear are not eligible.
     if (!pipeline.getSources().empty() &&
         dynamic_cast<DocumentSourceGeoNear*>(pipeline.peekFront())) {
@@ -308,6 +313,7 @@ StatusWith<AggJoinModel> AggJoinModel::constructJoinModel(const Pipeline& pipeli
     // sub-pipelines!) to ensure that if we bail out, this stays idempotent.
     // TODO SERVER-111383: We should see if we can make createCanonicalQuery() idempotent instead.
     auto expCtx = pipeline.getContext();
+
     const auto& nss = expCtx->getNamespaceString();
     auto clonedExpCtx = makeCopyFromExpressionContext(expCtx, nss);
     auto suffix = pipeline.clone(clonedExpCtx);
