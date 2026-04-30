@@ -2,7 +2,7 @@
  * Tests that the analyzeShardKey command returns correct cardinality and frequency metrics when
  * document sampling is involved.
  *
- * @tags: [requires_fcv_70]
+ * @tags: [requires_fcv_70, requires_profiling]
  */
 import {ReplSetTest} from "jstests/libs/replsettest.js";
 import {ShardingTest} from "jstests/libs/shardingtest.js";
