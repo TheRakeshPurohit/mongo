@@ -63,49 +63,6 @@
   "components": [
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/ftdc-io@{{VERSION}}",
-      "supplier": {
-        "name": "MongoDB, Inc.",
-        "url": [
-          "https://mongodb.com"
-        ]
-      },
-      "group": "10gen",
-      "name": "ftdc-io (Full-Time Diagnostics Capture)",
-      "version": "{{VERSION}}",
-      "description": "FTDC (Full-Time Diagnostics Capture) IO",
-      "scope": "excluded",
-      "licenses": [
-        {
-          "license": {
-            "name": "Internal Use Only"
-          }
-        }
-      ],
-      "copyright": "MongoDB, Inc.",
-      "purl": "pkg:cargo/ftdc-io@{{VERSION}}",
-      "externalReferences": [
-        {
-          "url": "https://github.com/10gen/mongo/tree/master/monguard/src/ftdc-io",
-          "type": "vcs"
-        }
-      ],
-      "evidence": {
-        "occurrences": [
-          {
-            "location": "monguard/src/ftdc-io"
-          }
-        ]
-      },
-      "properties": [
-        {
-          "name": "internal:private",
-          "value": "true"
-        }
-      ]
-    },
-    {
-      "type": "library",
       "bom-ref": "pkg:cargo/monguard@{{VERSION}}",
       "supplier": {
         "name": "MongoDB, Inc.",
@@ -137,49 +94,6 @@
         "occurrences": [
           {
             "location": "monguard/"
-          }
-        ]
-      },
-      "properties": [
-        {
-          "name": "internal:private",
-          "value": "true"
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "bom-ref": "pkg:cargo/tracing-logv2@{{VERSION}}",
-      "supplier": {
-        "name": "MongoDB, Inc.",
-        "url": [
-          "https://mongodb.com"
-        ]
-      },
-      "group": "10gen",
-      "name": "tracing-logv2",
-      "version": "{{VERSION}}",
-      "description": "logV2 structured logging for monguard",
-      "scope": "excluded",
-      "licenses": [
-        {
-          "license": {
-            "name": "Internal Use Only"
-          }
-        }
-      ],
-      "copyright": "MongoDB, Inc.",
-      "purl": "pkg:cargo/tracing-logv2@{{VERSION}}",
-      "externalReferences": [
-        {
-          "url": "https://github.com/10gen/mongo/tree/master/monguard/src/tracing-logv2",
-          "type": "vcs"
-        }
-      ],
-      "evidence": {
-        "occurrences": [
-          {
-            "location": "monguard/src/tracing-logv2"
           }
         ]
       },
