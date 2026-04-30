@@ -975,6 +975,8 @@ public:
                   size_t keyBatchSize,
                   size_t keyBatchBytes) final;
 
+    IndexStateInfo getPersistedState() final;
+
     IndexStateInfo persistDataForShutdown() final;
 
 protected:
@@ -1368,15 +1370,22 @@ Status BulkBuilderImpl::commit(OperationContext* opCtx,
     return Status::OK();
 }
 
-IndexStateInfo BulkBuilderImpl::persistDataForShutdown() {
-    auto state = _sorter->persistDataForShutdown();
-
+IndexStateInfo makeIndexStateInfo(BulkBuilderImpl::Sorter::PersistedState state,
+                                  int64_t keysInserted) {
     IndexStateInfo stateInfo;
-    stateInfo.setStorageIdentifier(state.storageIdentifier);
-    stateInfo.setNumKeys(_keysInserted);
+    stateInfo.setStorageIdentifier(std::move(state.storageIdentifier));
+    stateInfo.setNumKeys(keysInserted);
     stateInfo.setRanges(std::move(state.ranges));
 
     return stateInfo;
+}
+
+IndexStateInfo BulkBuilderImpl::getPersistedState() {
+    return makeIndexStateInfo(_sorter->getPersistedState(), _keysInserted);
+}
+
+IndexStateInfo BulkBuilderImpl::persistDataForShutdown() {
+    return makeIndexStateInfo(_sorter->persistDataForShutdown(), _keysInserted);
 }
 
 void BulkBuilderImpl::_addKeyForCommit(OperationContext* opCtx,

@@ -293,6 +293,8 @@ public:
 
         virtual bool isMultikey() const = 0;
 
+        virtual IndexStateInfo getPersistedState() = 0;
+
         /**
          * Persists on disk the keys that have been inserted using this BulkBuilder.
          */

@@ -666,6 +666,14 @@ public:
     virtual ~Sorter() {}
 
     /**
+     * Returns the current persisted sorter state which can then be used to later reconstruct a
+     * sorter.
+     */
+    virtual PersistedState getPersistedState() {
+        MONGO_UNREACHABLE_TASSERT(12576000);
+    }
+
+    /**
      * Spills all of the sorted data to disk, preserves the temporary storage, and then returns
      * metadata which can be passed to makeFromExistingRanges() to use the spill storage later. May
      * be called before or after calling done().

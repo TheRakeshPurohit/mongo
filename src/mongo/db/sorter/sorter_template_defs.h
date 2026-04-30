@@ -461,6 +461,19 @@ public:
         setMaxMemoryUsageBytes();
     }
 
+    typename Sorter<Key, Value>::PersistedState getPersistedState() override {
+        this->_spiller->getStorage().keep();
+
+        std::vector<SorterRange> ranges;
+        ranges.reserve(this->_iters.size());
+        std::transform(this->_iters.begin(),
+                       this->_iters.end(),
+                       std::back_inserter(ranges),
+                       [](auto&& it) { return it->getRange(); });
+
+        return {this->_spiller->getStorage().getStorageIdentifier(), std::move(ranges)};
+    }
+
 protected:
     /**
      * An implementation of a k-way merge sort.
@@ -687,16 +700,7 @@ public:
 
     typename Sorter<Key, Value>::PersistedState persistDataForShutdown() override {
         spill();
-        this->_spiller->getStorage().keep();
-
-        std::vector<SorterRange> ranges;
-        ranges.reserve(this->_iters.size());
-        std::transform(this->_iters.begin(),
-                       this->_iters.end(),
-                       std::back_inserter(ranges),
-                       [](auto&& it) { return it->getRange(); });
-
-        return {this->_spiller->getStorage().getStorageIdentifier(), ranges};
+        return this->getPersistedState();
     }
 
 private:

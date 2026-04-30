@@ -469,6 +469,31 @@ TYPED_TEST(FileBasedMakeFromExistingRangesTest, RoundTrip) {
     }
 }
 
+TYPED_TEST(MakeFromExistingRangesTest, GetPersistedState) {
+    auto spillDir = makeSpillDir();
+    auto opts = SortOptions{};
+    auto sorter = IWSorter::make(
+        opts, IWComparator(ASC), this->storage().makeSpiller(opts, spillDir.path()), {});
+
+    IWPair data{1, 100};
+    sorter->add(data.first, data.second);
+
+    // Before spilling, Sorter::getPersistedState returns no sorted ranges.
+    auto state = sorter->getPersistedState();
+    EXPECT_FALSE(state.storageIdentifier.empty());
+    EXPECT_EQ(state.ranges.size(), 0);
+
+    // Sorter::persistDataForShutdown forces a spill and returns the sorted range.
+    state = sorter->persistDataForShutdown();
+    EXPECT_FALSE(state.storageIdentifier.empty());
+    EXPECT_EQ(state.ranges.size(), 1);
+
+    // After spilling, Sorter::getPersistedState returns the same as Sorter::persistDataForShutdown.
+    state = sorter->getPersistedState();
+    EXPECT_FALSE(state.storageIdentifier.empty());
+    EXPECT_EQ(state.ranges.size(), 1);
+}
+
 TYPED_TEST(MakeFromExistingRangesTest, NextWithDeferredValues) {
     unittest::TempDir spillDir = makeSpillDir();
     auto opts = SortOptions().Tracker(nullptr);
