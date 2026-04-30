@@ -29,6 +29,7 @@
 
 #include "mongo/db/shard_role/shard_catalog/catalog_repair.h"
 
+#include "mongo/db/index_builds/resumable_index_builds_common.h"
 #include "mongo/db/shard_role/shard_catalog/catalog_raii.h"
 #include "mongo/db/shard_role/shard_catalog/durable_catalog.h"
 #include "mongo/db/shard_role/shard_role.h"
@@ -37,7 +38,6 @@
 #include "mongo/db/storage/storage_parameters_gen.h"
 #include "mongo/db/storage/write_unit_of_work.h"
 #include "mongo/stdx/unordered_set.h"
-#include "mongo/util/fail_point.h"
 
 #define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
@@ -45,9 +45,6 @@
     LOGV2_DEBUG_OPTIONS(ID, DLEVEL, {logv2::LogComponent::kStorageRecovery}, MESSAGE, ##__VA_ARGS__)
 
 namespace mongo {
-
-MONGO_FAIL_POINT_DEFINE(failToParseResumeIndexInfo);
-
 namespace {
 /**
  * Returns whether the given ident is an internal ident and if it should be dropped or used to
@@ -82,41 +79,11 @@ bool identHandler(StorageEngine* engine,
     // When starting up after a clean shutdown and resumable index builds are supported, find the
     // internal idents that contain the relevant information to resume each index build and recover
     // the state.
-    auto rs = engine->getEngine()->getRecordStore(
-        opCtx, NamespaceString::kEmpty, ident, RecordStore::Options{}, boost::none /* uuid */);
-
-    auto cursor = rs->getCursor(opCtx, *shard_role_details::getRecoveryUnit(opCtx));
-    auto record = cursor->next();
-    if (record) {
-        auto doc = record.value().data.toBson();
-
-        // Parse the documents here so that we can restart the build if the document doesn't
-        // contain all the necessary information to be able to resume building the index.
-        ResumeIndexInfo resumeInfo;
-        try {
-            if (MONGO_unlikely(failToParseResumeIndexInfo.shouldFail())) {
-                uasserted(ErrorCodes::FailPointEnabled,
-                          "failToParseResumeIndexInfo fail point is enabled");
-            }
-
-            resumeInfo = ResumeIndexInfo::parse(doc, IDLParserContext("ResumeIndexInfo"));
-        } catch (const DBException& e) {
-            LOGV2(4916300, "Failed to parse resumable index info", "error"_attr = e.toStatus());
-
-            // Ignore the error so that we can restart the index build instead of resume it. We
-            // should drop the internal ident if we failed to parse.
-            return true;
-        }
-
-        LOGV2(4916301,
-              "Found unfinished index build to resume",
-              "buildUUID"_attr = resumeInfo.getBuildUUID(),
-              "collectionUUID"_attr = resumeInfo.getCollectionUUID(),
-              "phase"_attr = idl::serialize(resumeInfo.getPhase()));
-
+    auto resumeInfo = index_builds::readResumeIndexInfo(engine, opCtx, ident);
+    if (resumeInfo) {
         // Keep the tables that are needed to rebuild this index.
         // Note: the table that stores the rebuild metadata itself (i.e. |ident|) isn't kept.
-        for (const mongo::IndexStateInfo& idx : resumeInfo.getIndexes()) {
+        for (const mongo::IndexStateInfo& idx : resumeInfo->getIndexes()) {
             internalIdentsToKeep.insert(std::string{idx.getSideWritesTable()});
             if (idx.getDuplicateKeyTrackerTable()) {
                 internalIdentsToKeep.insert(std::string{*idx.getDuplicateKeyTrackerTable()});
@@ -126,7 +93,7 @@ bool identHandler(StorageEngine* engine,
             }
         }
 
-        reconcileResult->indexBuildsToResume.push_back(std::move(resumeInfo));
+        reconcileResult->indexBuildsToResume.push_back(std::move(*resumeInfo));
 
         return true;
     }
