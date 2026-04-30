@@ -23,6 +23,7 @@ import re
 import shlex
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from functools import cache
 from typing import Optional
 
@@ -313,79 +314,97 @@ def get_variant_expansion(
     return ""
 
 
+def _build_tag_query(tags: list[str], target_pattern: str) -> str:
+    excluded = f"attr(tags, '\\bincompatible_with_bazel_remote_test(?![a-zA-Z0-9_-])', kind('py_test', {target_pattern}))"
+    if len(tags) == 1:
+        return f"attr(tags, '\\b{tags[0]}(?![a-zA-Z0-9_-])', kind('py_test', {target_pattern})) - {excluded}"
+    tag_queries = [
+        f"attr(tags, '\\b{tag}(?![a-zA-Z0-9_-])', kind('py_test', {target_pattern}))"
+        for tag in tags
+    ]
+    return f"({' + '.join(tag_queries)}) - {excluded}"
+
+
+def _variant_cquery_flags(variant, resmoke_task, expansions) -> tuple[list[str], list[str], str]:
+    """Compute (tags, cquery_flags, target_pattern) for a variant."""
+    target_pattern = expansions.get("resmoke_test_targets", "//...")
+
+    tag_filter = get_variant_expansion(variant, resmoke_task, RESMOKE_TESTS_TAG_FILTER)
+    tags = [t.strip() for t in tag_filter.split(",") if t.strip()]
+
+    cquery_flags = []
+    for flag_name in ["bazel_args", "bazel_compile_flags", "task_compile_flags"]:
+        flag_value = get_variant_expansion(variant, resmoke_task, flag_name)
+        if flag_value:
+            flag_value = expand_evergreen_variables(flag_value, expansions)
+            cquery_flags.extend(shlex.split(flag_value))
+
+    cquery_flags.append("--//bazel/resmoke:skip_deps_for_cquery")
+    cquery_flags.append("--noincompatible_enable_cc_toolchain_resolution")
+    cquery_flags.append("--repo_env=no_c++_toolchain=1")
+    cquery_flags.append("--keep_going")
+
+    if " " in target_pattern and not target_pattern.startswith("set("):
+        target_pattern = f"set({target_pattern})"
+
+    return tags, cquery_flags, target_pattern
+
+
 def query_targets(
     variant,
     resmoke_task,
     expansions,
 ) -> list[str]:
-    target_pattern = expansions.get("resmoke_test_targets", "//...")
-
-    tag_filter = get_variant_expansion(variant, resmoke_task, RESMOKE_TESTS_TAG_FILTER)
-    tags = [t.strip() for t in tag_filter.split(",") if t.strip()]
+    tags, cquery_flags, target_pattern = _variant_cquery_flags(variant, resmoke_task, expansions)
     if not tags:
-        print(
-            f"Warning: No tags found in filter '{tag_filter}' for variant {variant.name}",
-            file=sys.stderr,
-        )
+        print(f"Warning: No tag filter for variant {variant.name}", file=sys.stderr)
         return []
 
-    bazel_flags = []
-    for flag_name in ["bazel_args", "bazel_compile_flags", "task_compile_flags"]:
-        flag_value = get_variant_expansion(variant, resmoke_task, flag_name)
-        if flag_value:
-            flag_value = expand_evergreen_variables(flag_value, expansions)
-            bazel_flags.extend(shlex.split(flag_value))
+    # Phase 1: unconfigured `bazel query` for tag matching. This skips configured
+    # analysis, which is what made running `bazel cquery` against //... slow.
+    query_cmd = [_bazel_binary(), "query", "--keep_going", _build_tag_query(tags, target_pattern)]
+    q_result = subprocess.run(query_cmd, capture_output=True, text=True)
+    candidates = [line.strip() for line in q_result.stdout.strip().split("\n") if line.strip()]
 
-    flags_list = list(bazel_flags)
-    flags_list.append("--//bazel/resmoke:skip_deps_for_cquery")
-    flags_list.append("--noincompatible_enable_cc_toolchain_resolution")
-    flags_list.append("--repo_env=no_c++_toolchain=1")
-    flags_list.append("--keep_going")
+    if not candidates:
+        if target_pattern == "//...":
+            error_msg = (
+                f"Bazel query failed. No targets found for variant {variant.name}\n"
+                f"Bazel query: {query_cmd[-1]}\n"
+                f"Command: {' '.join(query_cmd)}\n"
+                f"STDOUT:\n{q_result.stdout}\n"
+                f"STDERR:\n{q_result.stderr}"
+            )
+            raise RuntimeError(error_msg)
+        return []
 
-    # If target_pattern contains multiple space-separated targets, wrap them in set()
-    # to create valid Bazel query syntax
-    if " " in target_pattern and not target_pattern.startswith("set("):
-        target_pattern = f"set({target_pattern})"
-
-    # Query for tests with tags that match the variant. Only py_test rules are considered,
-    # since resmoke_suite_test is a macro for a py_test.
-    excluded = f"attr(tags, '\\bincompatible_with_bazel_remote_test(?![a-zA-Z0-9_-])', kind('py_test', {target_pattern}))"
-    if len(tags) == 1:
-        # Single tag - simple query
-        tag = tags[0]
-        query = f"attr(tags, '\\b{tag}(?![a-zA-Z0-9_-])', kind('py_test', {target_pattern})) - {excluded}"
-    else:
-        # Multiple tags - use + operator to combine them in a single query
-        tag_queries = [
-            f"attr(tags, '\\b{tag}(?![a-zA-Z0-9_-])', kind('py_test', {target_pattern}))"
-            for tag in tags
-        ]
-        query = f"({' + '.join(tag_queries)}) - {excluded}"
-
-    cmd = (
+    # Phase 2: configured `bazel cquery` scoped to the Phase 1 candidates, to
+    # drop targets whose `target_compatible_with` excludes the variant's platform.
+    candidate_set = "set(" + " ".join(candidates) + ")"
+    cquery_cmd = (
         [_bazel_binary(), "cquery"]
-        + flags_list
+        + cquery_flags
         + [
-            query,
+            candidate_set,
             "--output=starlark",
             "--starlark:expr",
             'target.label if "IncompatiblePlatformProvider" not in providers(target) else ""',
         ]
     )
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    targets = [
+    result = subprocess.run(cquery_cmd, capture_output=True, text=True)
+    compatible = {
         line.strip().removeprefix("@@")
         for line in result.stdout.strip().split("\n")
         if line.strip()
-    ]
+    }
+    targets = [c for c in candidates if c in compatible]
     print(f"Variant {variant.name}: Found {len(targets)} targets total", file=sys.stderr)
 
     if target_pattern == "//..." and not targets:
         error_msg = (
             f"Bazel cquery failed. No targets found for variant {variant.name}\n"
-            f"Bazel cquery: {query}\n"
-            f"Command: {' '.join(cmd)}\n"
+            f"Bazel cquery: {candidate_set}\n"
+            f"Command: {' '.join(cquery_cmd)}\n"
             f"STDOUT:\n{result.stdout}\n"
             f"STDERR:\n{result.stderr}"
         )
@@ -516,17 +535,30 @@ def main(outfile: Annotated[str, typer.Option()]):
     evg_config_path = get_evergreen_config_path(project_name)
 
     print(f"Parsing Evergreen configuration from {evg_config_path}...", file=sys.stderr)
-    evg_config = parse_evergreen_file(evg_config_path)
+    # Pre-warm the @cache-decorated resolvers so their bazel-run + YAML costs
+    # overlap with parse_evergreen_file on the main thread.
+    with ThreadPoolExecutor(max_workers=2) as bg_pool:
+        bg_pool.submit(resolve_codeowners)
+        bg_pool.submit(resolve_assignment_tags)
 
-    project = {"tasks": [], "task_groups": [], "buildvariants": []}
+        evg_config = parse_evergreen_file(evg_config_path)
+
+        project = {"tasks": [], "task_groups": [], "buildvariants": []}
+
+        variant_tasks = []
+        for variant in evg_config.variants:
+            resmoke_task = variant.get_task("resmoke_tests")
+            if not resmoke_task:
+                continue
+            variant_tasks.append((variant, resmoke_task))
+
+        with ThreadPoolExecutor(max_workers=max(2, len(variant_tasks))) as pool:
+            targets_per_variant = list(
+                pool.map(lambda vt: query_targets(vt[0], vt[1], expansions), variant_tasks)
+            )
 
     targets_all = set()
-    for variant in evg_config.variants:
-        resmoke_task = variant.get_task("resmoke_tests")
-        if not resmoke_task:
-            continue
-
-        targets = query_targets(variant, resmoke_task, expansions)
+    for (variant, _), targets in zip(variant_tasks, targets_per_variant):
         if not targets:
             continue
         targets_all.update(targets)
@@ -552,7 +584,7 @@ def main(outfile: Annotated[str, typer.Option()]):
         }
         project["buildvariants"].append(build_variant)
 
-        project["tasks"] = [make_results_task(target) for target in targets_all]
+    project["tasks"] = [make_results_task(target) for target in targets_all]
 
     with open(outfile, "w") as f:
         f.write(json.dumps(project, indent=4))
