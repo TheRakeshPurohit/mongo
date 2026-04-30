@@ -377,45 +377,50 @@ PlanExecutorExpress<Plan>::PlanExecutorExpress(
 
 template <class Plan>
 PlanExecutor::ExecState PlanExecutorExpress<Plan>::getNext(BSONObj* out, RecordId* dlOut) {
-    auto optTimer = maybeMakeScopedTimer(_opCtx,
-                                         _commonStats.executionTime.precision,
-                                         &_commonStats.executionTime.executionTimeEstimate);
-
     bool haveOutput = false;
-    size_t numUnavailabilityYieldsSinceLastSuccess = 0;
-    size_t numWriteConflictYieldsSinceLastSuccess = 0;
+    {
+        auto optTimer = maybeMakeScopedTimer(_opCtx,
+                                             _commonStats.executionTime.precision,
+                                             &_commonStats.executionTime.executionTimeEstimate);
 
-    checkFailPointPlanExecAlwaysFails(nss());
+        size_t numUnavailabilityYieldsSinceLastSuccess = 0;
+        size_t numWriteConflictYieldsSinceLastSuccess = 0;
 
-    express::PlanProgress progress((express::Ready()));
-    while (!haveOutput) {
-        if (_plan.exhausted()) {
-            return ExecState::IS_EOF;
-        }
+        checkFailPointPlanExecAlwaysFails(nss());
 
-        _opCtx->checkForInterrupt();
-
-        progress = _plan.proceed(_opCtx, [&](RecordId rid, BSONObj obj) {
-            if (dlOut) {
-                *dlOut = std::move(rid);
+        express::PlanProgress progress((express::Ready()));
+        while (!haveOutput) {
+            if (_plan.exhausted()) {
+                return ExecState::IS_EOF;
             }
-            if (out) {
-                *out = std::move(obj);
-                if (_mustReturnOwnedBson) {
-                    out->makeOwned();
+
+            _opCtx->checkForInterrupt();
+
+            progress = _plan.proceed(_opCtx, [&](RecordId rid, BSONObj obj) {
+                if (dlOut) {
+                    *dlOut = std::move(rid);
                 }
-            }
-            haveOutput = true;
-            return express::Ready();
-        });
+                if (out) {
+                    *out = std::move(obj);
+                }
+                haveOutput = true;
+                return express::Ready();
+            });
 
-        std::visit(
-            [&, this](auto result) {
-                this->readyPlanExecution(std::move(result),
-                                         numUnavailabilityYieldsSinceLastSuccess,
-                                         numWriteConflictYieldsSinceLastSuccess);
-            },
-            std::move(progress));
+            std::visit(
+                [&, this](auto result) {
+                    this->readyPlanExecution(std::move(result),
+                                             numUnavailabilityYieldsSinceLastSuccess,
+                                             numWriteConflictYieldsSinceLastSuccess);
+                },
+                std::move(progress));
+        }
+    }
+
+    // Copying here that the timer is no longer active to avoid polluting the execution time metric
+    // with the cost of copying the BSONObj.
+    if (out && _mustReturnOwnedBson) {
+        out->makeOwned();
     }
 
     return ExecState::ADVANCED;

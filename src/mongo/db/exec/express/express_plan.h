@@ -350,9 +350,10 @@ public:
         }
         _stats->incNumKeysExamined(1);
 
-        Snapshotted<BSONObj> obj;
-        auto cursor = accessCollection(collection).getCursor(opCtx);
-        boost::optional<Record> record = cursor->seekExact(rid);
+        if (!_cursor) {
+            _cursor = accessCollection(collection).getCursor(opCtx);
+        }
+        boost::optional<Record> record = _cursor->seekExact(rid);
 
         if (!record.has_value()) {
             logRecordNotFound(opCtx,
@@ -364,26 +365,36 @@ public:
             return Exhausted();
         }
 
-        record->data.makeOwned();
-        obj = Snapshotted<BSONObj>(shard_role_details::getRecoveryUnit(opCtx)->getSnapshotId(),
-                                   record->data.releaseToBson());
+        auto& provider = rss::ReplicatedStorageService::get(opCtx).getPersistenceProvider();
+        const bool reuseCursor = provider.supportsCursorReuseForExpressPathQueries();
+
+        // When the cursor will be reused (typical WiredTiger path), the cursor — held as a
+        // member — outlives this call, so the non-owning BSONObj view remains valid. Skip the
+        // full-record memcpy (`makeOwned`) here and let the caller materialize an owned BSON
+        // after the stage's scoped timer has ended, matching the classic FETCH path.
+        //
+        // When cursor reuse is disabled (e.g. for disaggregated storage), we are about to destroy
+        // the cursor and must take ownership of the record bytes before the underlying buffer
+        // becomes invalid.
+        if (!reuseCursor) {
+            record->data.makeOwned();
+        }
+        Snapshotted<BSONObj> obj(shard_role_details::getRecoveryUnit(opCtx)->getSnapshotId(),
+                                 record->data.releaseToBson());
 
         _stats->incNumDocumentsFetched(1);
 
-        // Reusing the cursor lowers write latency. For YCSB-style workloads, this causes the
-        // cache to run dirtier. This results in increased preemption of application threads to
-        // do eviction. With disaggregated storage, eviction has a higher cost (queued to go to
-        // storage layer services, WT must keep the page until page materialization). This results
-        // in higher variance for YCSB throughput, making it difficult to measure incremental
-        // performance improvements. For now, disable cursor reuse to unblock progress on
-        // disaggregated storage performance.
-
-        auto& provider = rss::ReplicatedStorageService::get(opCtx).getPersistenceProvider();
-        if (!provider.supportsCursorReuseForExpressPathQueries()) {
-            cursor = nullptr;
+        if (!reuseCursor) {
+            // Reusing the cursor lowers write latency. For YCSB-style workloads, this causes the
+            // cache to run dirtier. This results in increased preemption of application threads to
+            // do eviction. With storage providers where eviction has a higher cost (e.g: for
+            // disaggregated storage, eviction is queued to go to storage layer services, WT must
+            // keep the page until page materialization). This results in higher variance for YCSB
+            // throughput, making it difficult to measure incremental performance improvements.
+            _cursor.reset();
         }
 
-        auto progress = continuation(collection, std::move(rid), std::move(obj), cursor.get());
+        auto progress = continuation(collection, std::move(rid), std::move(obj), _cursor.get());
 
         // Only advance the iterator if the continuation completely processed its item, as indicated
         // by its return value.
@@ -401,6 +412,9 @@ public:
 
     void releaseResources() {
         _indexCatalogEntry = nullptr;
+        // Drop any cached cursor so we re-acquire it after a yield; the cursor's position
+        // and buffers are not valid across yields.
+        _cursor.reset();
     }
 
     void restoreResources(OperationContext* opCtx,
@@ -444,6 +458,10 @@ private:
     boost::optional<UUID> _collectionUUID;
     uint64_t _catalogEpoch{0};
     const IndexCatalogEntry* _indexCatalogEntry{nullptr};  // Unowned.
+    // Held across `consumeOne` calls so the non-owning BSONObj produced from `seekExact`
+    // remains valid after the continuation returns and the scoped stage timer closes.
+    // Reset on yield and on the cursor-reuse-disabled path.
+    std::unique_ptr<SeekableRecordCursor> _cursor;
     IteratorStats* _stats{nullptr};
     bool _exhausted{false};
 };
@@ -900,6 +918,11 @@ public:
                 "Cannot update document that is not from the current snapshot",
                 shard_role_details::getRecoveryUnit(opCtx)->getSnapshotId() == obj.snapshotId());
 
+        // The iterator may hand us a non-owning BSONObj view into the cursor's buffer.
+        // The pending update will mutate storage in ways that can invalidate that view,
+        // so take ownership now.
+        obj.value().makeOwned();
+
         BSONObj newObj;
         return recoverFromNonFatalWriteException(
             opCtx,
@@ -976,6 +999,11 @@ public:
         tassert(5555515,
                 "Cannot delete document that is not from the current snapshot",
                 shard_role_details::getRecoveryUnit(opCtx)->getSnapshotId() == obj.snapshotId());
+
+        // The iterator may hand us a non-owning BSONObj view into the cursor's buffer.
+        // `collection_internal::deleteDocument` requires an owned doc, and the pending write
+        // will mutate storage in ways that can invalidate that view, so take ownership now.
+        obj.value().makeOwned();
 
         return recoverFromNonFatalWriteException(
             opCtx,

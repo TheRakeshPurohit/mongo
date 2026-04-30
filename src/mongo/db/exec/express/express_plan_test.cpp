@@ -182,6 +182,74 @@ TEST_F(ExpressPlanTest, TestIdLookupViaIndexWithMatchingQuery) {
     ASSERT_EQ(iteratorStats.indexKeyPattern(), "{ _id: 1 }");
 }
 
+TEST_F(ExpressPlanTest,
+       TestIdLookupViaIndexHandsContinuationNonOwningBsonAndLiveCursorWhenReusingCursor) {
+    // On the cursor-reuse path (default WiredTiger), 'IdLookupViaIndex::consumeOne' is expected to
+    // skip the defensive 'record->data.makeOwned()' copy and instead pass a non-owning 'BSONObj'
+    // view together with the still-alive cursor pointer to its continuation. This avoids paying a
+    // full-record memcpy for every fetched document
+    auto& provider =
+        rss::ReplicatedStorageService::get(operationContext()).getPersistenceProvider();
+    ASSERT(provider.supportsCursorReuseForExpressPathQueries());
+
+    auto collection = createAndPopulateTestCollection(
+        "{_id: 0, a: 2}"_sd, "{_id: 1, a: 3}"_sd, "{_id: 2, a: 5}"_sd);
+
+    IteratorStats iteratorStats;
+    IdLookupViaIndex iterator(fromjson("{_id: 2}"));
+    iterator.open(operationContext(), collection, &iteratorStats);
+
+    boost::optional<bool> seenIsOwned;
+    bool seenCursor = false;
+    auto result = iterator.consumeOne(operationContext(),
+                                      [&](const CollectionAcquisition,
+                                          RecordId,
+                                          Snapshotted<BSONObj> obj,
+                                          const SeekableRecordCursor* cursor) -> PlanProgress {
+                                          seenIsOwned = obj.value().isOwned();
+                                          seenCursor = (cursor != nullptr);
+                                          return Ready();
+                                      });
+    ASSERT(std::holds_alternative<Exhausted>(result));
+    ASSERT(seenIsOwned.has_value());
+    ASSERT_FALSE(*seenIsOwned)
+        << "Expected the BSONObj passed to the continuation to be a non-owning view";
+    ASSERT_TRUE(seenCursor)
+        << "Expected the cursor pointer passed to the continuation to be non-null";
+}
+
+TEST_F(ExpressPlanTest, TestIdLookupViaIndexBsonRemainsValidAndOwnableAfterConsumeOneReturns) {
+    // The executor reads (and may 'makeOwned') the BSONObj produced by the iterator after
+    // 'consumeOne' returns.
+    auto collection = createAndPopulateTestCollection(
+        "{_id: 0, a: 2}"_sd, "{_id: 1, a: 3}"_sd, "{_id: 2, a: 5}"_sd);
+
+    IteratorStats iteratorStats;
+    IdLookupViaIndex iterator(fromjson("{_id: 2}"));
+    iterator.open(operationContext(), collection, &iteratorStats);
+
+    boost::optional<BSONObj> captured;
+    auto result = iterator.consumeOne(operationContext(),
+                                      [&](const CollectionAcquisition,
+                                          RecordId,
+                                          Snapshotted<BSONObj> obj,
+                                          const SeekableRecordCursor*) -> PlanProgress {
+                                          captured.emplace(std::move(obj.value()));
+                                          return Ready();
+                                      });
+    ASSERT(std::holds_alternative<Exhausted>(result));
+    ASSERT(captured.has_value());
+
+    // Read after 'consumeOne' has returned. Safe because the iterator's cursor is still alive.
+    ASSERT_BSONOBJ_EQ(*captured, fromjson("{_id: 2, a: 5}"));
+
+    // Take ownership and read again -- mirrors what 'PlanExecutorExpress::getNext' does after its
+    // scoped timer has ended on callers that request owned BSON.
+    captured->makeOwned();
+    ASSERT_TRUE(captured->isOwned());
+    ASSERT_BSONOBJ_EQ(*captured, fromjson("{_id: 2, a: 5}"));
+}
+
 TEST_F(ExpressPlanTest, TestIdLookupViaIndexWithNonMatchingQuery) {
     auto collection = createAndPopulateTestCollection(
         "{_id: 0, a: 2}"_sd, "{_id: 1, a: 3}"_sd, "{_id: 2, a: 5}"_sd);
