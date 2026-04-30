@@ -10,6 +10,7 @@
  *
  * @tags: [ featureFlagExtensionsAPI ]
  */
+import {setParameterOnAllNonConfigNodes} from "jstests/noPassthrough/libs/server_parameter_helpers.js";
 import {
     checkPlatformCompatibleWithExtensions,
     withExtensionsAndMongot,
@@ -18,9 +19,11 @@ import {
     createTestView,
     getExtensionSearchUsedCount,
     getLegacySearchUsedCount,
+    getNumNodes,
     getSearchInHybridSearchKickbackRetryCount,
     getSearchInUnionWithKickbackRetryCount,
     getSearchOnViewKickbackRetryCount,
+    kNumShards,
     kSearchQuery,
     kTestCollName,
     kTestViewName,
@@ -33,8 +36,8 @@ checkPlatformCompatibleWithExtensions();
 /**
  * Runs $search or $searchMeta on a view and verifies IFR kickback metrics.
  */
-function runSearchViewTest(conn, mongotMock, isSearchMeta, featureFlagValue) {
-    const {testDb, coll, view} = createTestView(conn);
+function runSearchViewTest(conn, mongotMock, isSearchMeta, featureFlagValue, shardingTest = null) {
+    const {testDb, coll, view} = createTestView(conn, shardingTest);
 
     setUpSearchMocks(mongotMock, {
         coll,
@@ -43,11 +46,18 @@ function runSearchViewTest(conn, mongotMock, isSearchMeta, featureFlagValue) {
         query: kSearchQuery,
         isSearchMeta,
         startingCursorId: 123,
+        shardingTest,
     });
 
-    // In standalone with flag=true, the IFR kickback fires once per query.
-    // With flag=false, legacy runs from the start — no kickback at all.
-    const expectedViewKickbackRetryDelta = featureFlagValue ? 1 : 0;
+    // In sharded mode, when a shard throws CommandOnShardedViewNotSupportedOnMongod the router's
+    // onViewError lambda in ClusterAggregate::runAggregate() adds featureFlagSearchExtension to
+    // state.ifrFlagsToDisableOnRetries whenever featureFlagExtensionsInsideHybridSearch is off,
+    // so the retry parses the resolved-view pipeline with the extension stage already disabled
+    // and bindViewInfo never throws the IFR kickback. In standalone with flag=true the kickback
+    // fires once per query; with flag=false legacy runs from the start - no kickback either way.
+    const expectedViewKickbackRetryDelta = !shardingTest && featureFlagValue ? 1 : 0;
+
+    const expectedLegacyDelta = getNumNodes(shardingTest);
 
     const stage = isSearchMeta ? {$searchMeta: kSearchQuery} : {$search: kSearchQuery};
 
@@ -59,7 +69,7 @@ function runSearchViewTest(conn, mongotMock, isSearchMeta, featureFlagValue) {
         getExtensionCountFn: getExtensionSearchUsedCount,
         featureFlagName: "featureFlagSearchExtension",
         expectedRetryDelta: expectedViewKickbackRetryDelta,
-        expectedLegacyDelta: 1,
+        expectedLegacyDelta,
         queries: [
             () => {
                 view.aggregate([stage]).toArray();
@@ -71,8 +81,8 @@ function runSearchViewTest(conn, mongotMock, isSearchMeta, featureFlagValue) {
 /**
  * Runs $search or $searchMeta inside a $unionWith subpipeline on a collection.
  */
-function runUnionWithSearchStageTests(conn, mongotMock, isSearchMeta, featureFlagValue) {
-    const {testDb, coll} = createTestView(conn);
+function runUnionWithSearchStageTests(conn, mongotMock, isSearchMeta, featureFlagValue, shardingTest = null) {
+    const {testDb, coll} = createTestView(conn, shardingTest);
 
     setUpSearchMocks(mongotMock, {
         coll,
@@ -80,11 +90,13 @@ function runUnionWithSearchStageTests(conn, mongotMock, isSearchMeta, featureFla
         query: kSearchQuery,
         isSearchMeta,
         startingCursorId: 123,
+        shardingTest,
     });
 
     // The inUnionWith kickback fires once per query when flag=true (on the node that creates
     // the $unionWith subpipeline). With flag=false, legacy runs from the start.
     const expectedInUnionWithKickbackDelta = featureFlagValue ? 1 : 0;
+    const expectedLegacyDelta = getNumNodes(shardingTest);
 
     const stage = isSearchMeta ? {$searchMeta: kSearchQuery} : {$search: kSearchQuery};
     const unionWithStage = {
@@ -102,7 +114,7 @@ function runUnionWithSearchStageTests(conn, mongotMock, isSearchMeta, featureFla
         getExtensionCountFn: getExtensionSearchUsedCount,
         featureFlagName: "featureFlagSearchExtension",
         expectedRetryDelta: expectedInUnionWithKickbackDelta,
-        expectedLegacyDelta: 1,
+        expectedLegacyDelta,
         queries: [
             () => {
                 coll.aggregate([unionWithStage]).toArray();
@@ -114,8 +126,8 @@ function runUnionWithSearchStageTests(conn, mongotMock, isSearchMeta, featureFla
 /**
  * Runs $search or $searchMeta inside a $unionWith subpipeline targeting a view.
  */
-function runUnionWithOnViewSearchTests(conn, mongotMock, isSearchMeta, featureFlagValue) {
-    const {testDb, coll} = createTestView(conn);
+function runUnionWithOnViewSearchTests(conn, mongotMock, isSearchMeta, featureFlagValue, shardingTest = null) {
+    const {testDb, coll} = createTestView(conn, shardingTest);
 
     setUpSearchMocks(mongotMock, {
         coll,
@@ -124,9 +136,11 @@ function runUnionWithOnViewSearchTests(conn, mongotMock, isSearchMeta, featureFl
         query: kSearchQuery,
         isSearchMeta,
         startingCursorId: 123,
+        shardingTest,
     });
 
     const expectedInUnionWithKickbackDelta = featureFlagValue ? 1 : 0;
+    const expectedLegacyDelta = getNumNodes(shardingTest);
 
     const stage = isSearchMeta ? {$searchMeta: kSearchQuery} : {$search: kSearchQuery};
     const unionWithStage = {
@@ -144,7 +158,7 @@ function runUnionWithOnViewSearchTests(conn, mongotMock, isSearchMeta, featureFl
         getExtensionCountFn: getExtensionSearchUsedCount,
         featureFlagName: "featureFlagSearchExtension",
         expectedRetryDelta: expectedInUnionWithKickbackDelta,
-        expectedLegacyDelta: 1,
+        expectedLegacyDelta,
         queries: [
             () => {
                 coll.aggregate([unionWithStage]).toArray();
@@ -156,8 +170,14 @@ function runUnionWithOnViewSearchTests(conn, mongotMock, isSearchMeta, featureFl
 /**
  * Runs $unionWith targeting a view whose pipeline contains $search or $searchMeta.
  */
-function runUnionWithOnViewWithSearchInViewDefinitionTests(conn, mongotMock, isSearchMeta, featureFlagValue) {
-    const {testDb, coll} = createTestView(conn);
+function runUnionWithOnViewWithSearchInViewDefinitionTests(
+    conn,
+    mongotMock,
+    isSearchMeta,
+    featureFlagValue,
+    shardingTest = null,
+) {
+    const {testDb, coll} = createTestView(conn, shardingTest);
 
     const searchStage = isSearchMeta ? {$searchMeta: kSearchQuery} : {$search: kSearchQuery};
     const searchViewName = kTestViewName + (isSearchMeta ? "_searchMeta" : "_search");
@@ -172,9 +192,11 @@ function runUnionWithOnViewWithSearchInViewDefinitionTests(conn, mongotMock, isS
         query: kSearchQuery,
         isSearchMeta,
         startingCursorId: 123,
+        shardingTest,
     });
 
     const expectedInUnionWithKickbackDelta = featureFlagValue ? 1 : 0;
+    const expectedLegacyDelta = getNumNodes(shardingTest);
 
     const unionWithStage = {
         $unionWith: {
@@ -191,7 +213,7 @@ function runUnionWithOnViewWithSearchInViewDefinitionTests(conn, mongotMock, isS
         getExtensionCountFn: getExtensionSearchUsedCount,
         featureFlagName: "featureFlagSearchExtension",
         expectedRetryDelta: expectedInUnionWithKickbackDelta,
-        expectedLegacyDelta: 1,
+        expectedLegacyDelta,
         queries: [
             () => {
                 coll.aggregate([unionWithStage]).toArray();
@@ -207,14 +229,14 @@ function runUnionWithOnViewWithSearchInViewDefinitionTests(conn, mongotMock, isS
  * featureFlagExtensionsInsideHybridSearch is not, causing a retry with legacy $search.
  * When featureFlagSearchExtension is disabled, legacy $search is used from the start.
  */
-function runSearchHybridSearchTests(conn, mongotMock, isSearchMeta, featureFlagValue) {
+function runSearchHybridSearchTests(conn, mongotMock, isSearchMeta, featureFlagValue, shardingTest = null) {
     // Only $search is valid in hybrid search.
     if (isSearchMeta) {
         return;
     }
-    const {testDb, coll} = createTestView(conn);
+    const {testDb, coll} = createTestView(conn, shardingTest);
 
-    // Each $rankFusion/$scoreFusion pipeline with $search triggers one mongot command.
+    // Each $rankFusion/$scoreFusion pipeline with $search triggers one mongot search per node.
     // Set up mock responses for both queries (rankFusion + scoreFusion).
     for (let i = 0; i < 2; i++) {
         setUpSearchMocks(mongotMock, {
@@ -223,19 +245,19 @@ function runSearchHybridSearchTests(conn, mongotMock, isSearchMeta, featureFlagV
             query: kSearchQuery,
             isSearchMeta: false,
             startingCursorId: 300 + i * 10,
+            shardingTest,
         });
     }
 
     // One kickback per hybrid search query (rankFusion + scoreFusion).
     const expectedHybridKickbackRetryDelta = featureFlagValue ? 2 : 0;
+    const expectedLegacyDelta = 2 * getNumNodes(shardingTest);
 
     const searchStage = {$search: kSearchQuery};
     const rankFusionPipeline = [{$rankFusion: {input: {pipelines: {searchPipeline: [searchStage]}}}}];
     const scoreFusionPipeline = [
         {$scoreFusion: {input: {pipelines: {searchPipeline: [searchStage]}, normalization: "none"}}},
     ];
-
-    const expectedLegacyDelta = 2;
 
     runQueriesAndVerifyMetrics({
         conn,
@@ -261,25 +283,42 @@ function runSearchHybridSearchTests(conn, mongotMock, isSearchMeta, featureFlagV
     });
 }
 
-function runTests(conn, mongotMock) {
+function runTests(conn, mongotMock, shardingTest = null) {
+    if (shardingTest) {
+        // The IFR retry path interleaves planShardedSearch with per-shard search commands
+        // non-deterministically (some pipelines merge on mongos, others on a shard primary),
+        // so strict FIFO claiming on the shared mongotmock would cause false mismatches.
+        // disableOrderCheck() makes mongotmock claim queued responses by command content.
+        mongotMock.disableOrderCheck();
+    }
     for (const isSearchMeta of [false, true]) {
         for (const featureFlagValue of [true, false]) {
-            assert.commandWorked(conn.adminCommand({setParameter: 1, featureFlagSearchExtension: featureFlagValue}));
-            runSearchViewTest(conn, mongotMock, isSearchMeta, featureFlagValue);
-            runUnionWithSearchStageTests(conn, mongotMock, isSearchMeta, featureFlagValue);
-            runUnionWithOnViewSearchTests(conn, mongotMock, isSearchMeta, featureFlagValue);
-            runUnionWithOnViewWithSearchInViewDefinitionTests(conn, mongotMock, isSearchMeta, featureFlagValue);
-            runSearchHybridSearchTests(conn, mongotMock, isSearchMeta, featureFlagValue);
+            setParameterOnAllNonConfigNodes(conn, "featureFlagSearchExtension", featureFlagValue);
+            runSearchViewTest(conn, mongotMock, isSearchMeta, featureFlagValue, shardingTest);
+            runUnionWithSearchStageTests(conn, mongotMock, isSearchMeta, featureFlagValue, shardingTest);
+            runUnionWithOnViewSearchTests(conn, mongotMock, isSearchMeta, featureFlagValue, shardingTest);
+            runUnionWithOnViewWithSearchInViewDefinitionTests(
+                conn,
+                mongotMock,
+                isSearchMeta,
+                featureFlagValue,
+                shardingTest,
+            );
+            runSearchHybridSearchTests(conn, mongotMock, isSearchMeta, featureFlagValue, shardingTest);
             // TODO SERVER-117259: Add coverage for the $search/$searchMeta-in-$lookup kickback.
         }
+    }
+    if (shardingTest) {
+        // Drop any remaining maybeUnused mocks queued under disableOrderCheck so the cluster's
+        // built-in shutdown checks see an empty mongotmock state.
+        mongotMock.clearQueuedResponses();
     }
 }
 
 withExtensionsAndMongot(
     {"libsearch_extension.so": {}},
     runTests,
-    // TODO SERVER-123557: Add sharded topology testing.
-    ["standalone"],
-    {},
+    ["standalone", "sharded"],
+    {shards: kNumShards},
     {setParameter: {featureFlagExtensionsInsideHybridSearch: false}},
 );

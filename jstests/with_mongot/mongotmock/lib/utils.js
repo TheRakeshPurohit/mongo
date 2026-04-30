@@ -213,6 +213,7 @@ export function setUpMongotReturnExplainAndMultiCursor({
     cursorId = NumberLong(123),
     metaCursorId = NumberLong(1230),
     explainContents = defaultLastExplainContents,
+    maybeUnused = false,
 }) {
     let history = [
         {
@@ -227,6 +228,7 @@ export function setUpMongotReturnExplainAndMultiCursor({
                 explainContents /*results explain*/,
                 explainContents /*meta explain*/,
             ),
+            maybeUnused,
         },
     ];
     mongotMock.setMockResponses(history, cursorId, metaCursorId);

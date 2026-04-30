@@ -6,10 +6,16 @@ import {getParameter, setParameterOnAllNonConfigNodes} from "jstests/noPassthrou
 import {FixtureHelpers} from "jstests/libs/fixture_helpers.js";
 import {getUUIDFromListCollections} from "jstests/libs/uuid_util.js";
 import {
+    getDefaultProtocolVersionForPlanShardedSearch,
+    mockPlanShardedSearchResponseOnConn,
     mongotCommandForQuery,
     mongotCommandForVectorSearchQuery,
 } from "jstests/with_mongot/mongotmock/lib/mongotmock.js";
-import {setUpMongotReturnExplain, setUpMongotReturnExplainAndCursor} from "jstests/with_mongot/mongotmock/lib/utils.js";
+import {
+    setUpMongotReturnExplain,
+    setUpMongotReturnExplainAndCursor,
+    setUpMongotReturnExplainAndMultiCursor,
+} from "jstests/with_mongot/mongotmock/lib/utils.js";
 
 export const kNumShards = 2;
 export const kTestDbName = "test";
@@ -70,6 +76,13 @@ function setupTestCollection(conn, shardingTest = null) {
     }
 
     return {testDb, coll};
+}
+
+/**
+ * Returns the number of data-bearing nodes (kNumShards in sharded mode, 1 in standalone).
+ */
+export function getNumNodes(shardingTest) {
+    return shardingTest ? kNumShards : 1;
 }
 
 /**
@@ -207,16 +220,8 @@ export function createTestCollectionAndIndex(conn, mongotMock, shardingTest = nu
 }
 
 export function createTestViewAndIndex(conn, mongotMock, shardingTest = null) {
-    const {testDb, coll} = setupTestCollection(conn, shardingTest);
-
-    const viewExists = testDb.getCollectionInfos({name: kTestViewName, type: "view"}).length > 0;
-    if (!viewExists) {
-        assert.commandWorked(testDb.createView(kTestViewName, coll.getName(), kTestViewPipeline));
-    }
-    const view = testDb[kTestViewName];
-
+    const {testDb, view} = createTestView(conn, shardingTest);
     createSearchIndex(testDb, mongotMock, kTestViewName);
-
     return view;
 }
 
@@ -236,7 +241,6 @@ export function setupMockVectorSearchResponsesForView(conn, mongotMock, sharding
     const dbName = testDb.getName();
     const collName = kTestCollName;
     const viewName = kTestViewName;
-    const numNodes = shardingTest ? kNumShards : 1;
 
     const explainVectorSearchCmd = mongotCommandForVectorSearchQuery({
         queryVector,
@@ -250,7 +254,7 @@ export function setupMockVectorSearchResponsesForView(conn, mongotMock, sharding
         collectionUUID,
     });
     let startingCursorId = 123;
-    for (let i = 0; i < numNodes; i++) {
+    for (let i = 0; i < getNumNodes(shardingTest); i++) {
         setUpMongotReturnExplain({
             mongotMock,
             searchCmd: explainVectorSearchCmd,
@@ -271,7 +275,7 @@ export function setupMockVectorSearchResponsesForView(conn, mongotMock, sharding
     });
     vectorSearchCmd.viewName = viewName;
     vectorSearchCmd.view = {name: viewName, effectivePipeline: kTestViewPipeline};
-    for (let i = 0; i < numNodes; i++) {
+    for (let i = 0; i < getNumNodes(shardingTest); i++) {
         setUpMongotReturnExplainAndCursor({
             mongotMock,
             coll: testDb[collName],
@@ -320,8 +324,7 @@ export function setUpMongotMockForVectorSearch(
     }
 
     let cursorId = startingCursorId;
-    const numShards = shardingTest ? kNumShards : 1;
-    for (let i = 0; i < numShards; i++) {
+    for (let i = 0; i < getNumNodes(shardingTest); i++) {
         for (let j = 0; j < numPipelineExecutionsPerNode; j++) {
             setUpMongotReturnExplainAndCursor({
                 mongotMock,
@@ -350,7 +353,6 @@ export function setupMockVectorSearchResponsesForHybridSearch(conn, mongotMock, 
 
     const dbName = testDb.getName();
     const collName = kTestCollName;
-    const numNodes = shardingTest ? kNumShards : 1;
 
     const vectorSearchCmd = mongotCommandForVectorSearchQuery({
         queryVector,
@@ -364,7 +366,7 @@ export function setupMockVectorSearchResponsesForHybridSearch(conn, mongotMock, 
     });
 
     let startingCursorId = 200;
-    for (let i = 0; i < 2 * numNodes; i++) {
+    for (let i = 0; i < 2 * getNumNodes(shardingTest); i++) {
         setUpMongotReturnExplainAndCursor({
             mongotMock,
             coll: testDb[collName],
@@ -390,15 +392,13 @@ export function runHybridSearchTests(conn, mongotMock, featureFlagValue, shardin
     const expectRetry = getParameter(conn, "featureFlagVectorSearchExtension").value;
     const expectedHybridKickbackRetryDelta = expectRetry ? 2 : 0;
 
-    const numNodes = shardingTest ? kNumShards : 1;
-
     const rankFusionPipeline = [{$rankFusion: {input: {pipelines: {vectorPipeline: [vsQuery]}}}}];
 
     const scoreFusionPipeline = [
         {$scoreFusion: {input: {pipelines: {vectorPipeline: [vsQuery]}, normalization: "none"}}},
     ];
 
-    const expectedLegacyDelta = 2 * numNodes;
+    const expectedLegacyDelta = 2 * getNumNodes(shardingTest);
 
     runQueriesAndVerifyMetrics({
         conn,
@@ -451,18 +451,18 @@ export function getSearchInHybridSearchKickbackRetryCount(conn) {
 }
 
 /**
- * Sets up mongotmock responses needed for a $search or $searchMeta query on a view.
+ * Sets up mongotmock responses for a $search or $searchMeta query, possibly on a view.
  *
- * With flag=true the flow is:
- *   Extension parses -> bindViewInfo() throws IFR kickback -> retry with
- *   legacy $search/$searchMeta -> one search command to mongot.
- *
- * With flag=false the flow is:
- *   Legacy from start -> one search command to mongot. No kickback.
- *
- * TODO SERVER-123557: Add sharded topology support.
+ * Sharded note: the caller must `mongotMock.disableOrderCheck()` first — planShardedSearch
+ * and per-shard search commands interleave non-deterministically. Mocks are queued with
+ * `maybeUnused: true` because not every variant fires per subtest. planShardedSearch is
+ * queued for both the view and collection namespaces (legacy on a sharded view first targets
+ * the view name, then retries with the collection name).
  */
-export function setUpSearchMocks(mongotMock, {coll, testDb, viewName = null, query, isSearchMeta, startingCursorId}) {
+export function setUpSearchMocks(
+    mongotMock,
+    {coll, testDb, viewName = null, query, isSearchMeta, startingCursorId, shardingTest = null},
+) {
     const collectionUUID = getUUIDFromListCollections(testDb, coll.getName());
     const collName = coll.getName();
     const dbName = testDb.getName();
@@ -471,23 +471,92 @@ export function setUpSearchMocks(mongotMock, {coll, testDb, viewName = null, que
     // Legacy $searchMeta does not propagate viewName to mongot.
     const searchViewName = isSearchMeta ? null : viewName;
 
-    const searchCmd = mongotCommandForQuery({
-        query,
-        collName,
-        db: dbName,
-        collectionUUID,
-        viewName: searchViewName,
-        optimizationFlags: isSearchMeta ? {omitSearchDocumentResults: true} : null,
-    });
+    if (shardingTest == null) {
+        const searchCmd = mongotCommandForQuery({
+            query,
+            collName,
+            db: dbName,
+            collectionUUID,
+            viewName: searchViewName,
+            optimizationFlags: isSearchMeta ? {omitSearchDocumentResults: true} : null,
+        });
 
-    setUpMongotReturnExplainAndCursor({
-        mongotMock,
-        coll,
-        searchCmd,
-        nextBatch: [],
-        cursorId: cursorId++,
-        vars: isSearchMeta ? {SEARCH_META: {}} : null,
-    });
+        setUpMongotReturnExplainAndCursor({
+            mongotMock,
+            coll,
+            searchCmd,
+            nextBatch: [],
+            cursorId: cursorId++,
+            vars: isSearchMeta ? {SEARCH_META: {}} : null,
+        });
+    } else {
+        // Sharded path: queue planShardedSearch + per-shard search responses on the single
+        // shared mongotmock. The caller must have called mongotMock.disableOrderCheck() so that
+        // mongotmock claims responses by command content rather than queue position.
+        //
+        // Queue planShardedSearch for both possible target namespaces (view name and collection
+        // name) several times each. Per call, the IFR retry path may issue planShardedSearch
+        // 0-2 times depending on whether the query is on a view, the feature-flag value, and
+        // where the merger lands; queueing extra copies with maybeUnused: true tolerates retry
+        // headroom without coupling mock count to a specific code path. Metric assertions in
+        // runQueriesAndVerifyMetrics validate the actual legacy/extension counters.
+        const kPlanShardedSearchSlackPerCall = 3;
+        const planShardedSearchNamespaces = viewName != null ? [viewName, collName] : [collName];
+        const stWithMockShim = {st: shardingTest, getMockConnectedToHost: () => mongotMock};
+        for (let i = 0; i < kPlanShardedSearchSlackPerCall; i++) {
+            for (const ns of planShardedSearchNamespaces) {
+                mockPlanShardedSearchResponseOnConn(
+                    ns,
+                    query,
+                    dbName,
+                    undefined,
+                    stWithMockShim,
+                    shardingTest.s,
+                    /*maybeUnused=*/ true,
+                    /*explainVerbosity=*/ null,
+                    /*hasSearchMetaStage=*/ isSearchMeta,
+                );
+            }
+        }
+
+        const protocolVersion = getDefaultProtocolVersionForPlanShardedSearch();
+        const perShardSearchCmd = mongotCommandForQuery({
+            query,
+            collName,
+            db: dbName,
+            collectionUUID,
+            protocolVersion,
+            viewName: searchViewName,
+            optimizationFlags: isSearchMeta ? {omitSearchDocumentResults: true} : null,
+        });
+        // Meta cursor IDs are offset to a disjoint range so they cannot collide with results or
+        // planShardedSearch cursor IDs across calls.
+        const kMetaCursorOffset = 100000;
+        for (let i = 0; i < kNumShards; i++) {
+            if (isSearchMeta) {
+                setUpMongotReturnExplainAndMultiCursor({
+                    mongotMock,
+                    coll,
+                    searchCmd: perShardSearchCmd,
+                    nextBatch: [],
+                    metaBatch: [],
+                    cursorId: cursorId,
+                    metaCursorId: cursorId + kMetaCursorOffset,
+                    maybeUnused: true,
+                });
+                cursorId++;
+            } else {
+                setUpMongotReturnExplainAndCursor({
+                    mongotMock,
+                    coll,
+                    searchCmd: perShardSearchCmd,
+                    nextBatch: [],
+                    cursorId: cursorId++,
+                    maybeUnused: true,
+                });
+            }
+        }
+    }
 
     return cursorId;
 }
