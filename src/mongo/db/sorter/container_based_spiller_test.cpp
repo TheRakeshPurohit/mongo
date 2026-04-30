@@ -956,5 +956,43 @@ TEST_P(ContainerBasedSpillerTest, SpillDirPathFromIdent) {
     }
 }
 
+// Verifies getSortedIterator() on ContainerBasedStorage: reads back exactly the entries
+// written by makeWriter and passes the final checksum check on exhaustion.
+TEST_F(SortedContainerWriterTest, GetSortedIteratorReadsRange) {
+    auto opCtx = makeOperationContext();
+    auto* replCoord = repl::ReplicationCoordinator::get(opCtx.get());
+    auto* replCoordMock = dynamic_cast<repl::ReplicationCoordinatorMock*>(replCoord);
+    ASSERT(replCoordMock);
+    replCoordMock->alwaysAllowWrites(true);
+
+    ViewableIntegerKeyedContainer container;
+    container.setIdent(std::make_shared<Ident>("get_sorted_iterator_test"));
+    auto& ru = *shard_role_details::getRecoveryUnit(opCtx.get());
+    SorterContainerStats stats(&this->sorterTracker);
+
+    using KV = std::pair<IntWrapper, IntWrapper>;
+    using Settings = Iterator<IntWrapper, IntWrapper>::Settings;
+
+    ContainerBasedStorage<IntWrapper, IntWrapper> storage(
+        *opCtx, ru, container, stats, /*currKey=*/1, boost::none, sorter::kLatestChecksumVersion);
+
+    std::vector<KV> entries = {{10, 1}, {20, 2}, {30, 3}, {40, 4}, {50, 5}};
+    SortOptions opts;
+    auto writer = storage.makeWriter(opts, Settings{});
+    for (auto& [k, v] : entries) {
+        writer->addAlreadySorted(k, v);
+    }
+    auto range = writer->done()->getRange();
+
+    auto iter = storage.getSortedIterator(range, Settings{});
+    for (auto& [k, v] : entries) {
+        ASSERT_TRUE(iter->more());
+        auto [gotK, gotV] = iter->next();
+        EXPECT_EQ(gotK, k);
+        EXPECT_EQ(gotV, v);
+    }
+    EXPECT_FALSE(iter->more());
+}
+
 }  // namespace
 }  // namespace mongo::sorter

@@ -346,7 +346,15 @@ public:
 
     std::shared_ptr<sorter::Iterator<Key, Value>> getSortedIterator(
         const SorterRange& range, const Settings& settings) override {
-        MONGO_UNIMPLEMENTED_TASSERT(11374700);
+        return std::make_shared<ContainerIterator<Key, Value>>(
+            _container.getCursor(_ru),
+            range.getStart(),
+            range.getCurrent().value_or(range.getStart()),
+            range.getEnd(),
+            settings,
+            static_cast<size_t>(range.getChecksum()),
+            static_cast<size_t>(range.getCurrentChecksum().value_or(0)),
+            range.getChecksumVersion().value_or(this->getChecksumVersion()));
     };
 
     std::string getStorageIdentifier() override {
