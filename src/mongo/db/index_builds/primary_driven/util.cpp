@@ -300,4 +300,10 @@ Status abort(OperationContext* opCtx,
     return Status::OK();
 }
 
+ResumeIndexInfo resumeInfo(OperationContext* opCtx, const std::string& indexBuildIdent) {
+    uasserted(ErrorCodes::NotImplemented,
+              "Primary-driven index build resumability not fully implemented");
+    return ResumeIndexInfo{};
+}
+
 }  // namespace mongo::index_builds::primary_driven

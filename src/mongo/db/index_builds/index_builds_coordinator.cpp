@@ -2114,8 +2114,44 @@ void IndexBuildsCoordinator::_onStepUpAsyncTaskFn(OperationContext* opCtx) {
                                                  Status{ErrorCodes::InterruptedDueToReplStateChange,
                                                         "aborting all two-phase index builds"});
         }
-        for (auto&& [buildUUID, build] :
-             index_builds::primary_driven::registry(opCtx->getServiceContext()).all()) {
+
+        _resumePrimaryDrivenIndexBuildsOnStepUp(opCtx);
+
+        auto builds = activeIndexBuilds.getAllIndexBuilds();
+        forEachIndexBuild(builds,
+                          "IndexBuildsCoordinator::_onStepUpAsyncTaskFn"_sd,
+                          signalCommitQuorumAndRetrySkippedRecords);
+    } catch (const DBException& ex) {
+        LOGV2_DEBUG(7333100, 1, "Step-up task interrupted", "status"_attr = ex);
+    }
+    LOGV2(7508300, "Finished performing asynchronous step-up checks on index builds");
+}
+
+void IndexBuildsCoordinator::_resumePrimaryDrivenIndexBuildsOnStepUp(OperationContext* opCtx) {
+    const auto vCtx = VersionContext::getDecoration(opCtx);
+    const auto fcvSnapshot = serverGlobalParams.featureCompatibility.acquireFCVSnapshot();
+    const bool resumablePdibEnabled =
+        feature_flags::gResumablePrimaryDrivenIndexBuilds.isEnabledUseLastLTSFCVWhenUninitialized(
+            vCtx, fcvSnapshot);
+
+    for (auto&& [buildUUID, build] :
+         index_builds::primary_driven::registry(opCtx->getServiceContext()).all()) {
+
+        // TODO(SERVER-125682): Attempt to resume primary-driven index build.
+        bool resumeSucceeded = false;
+        if (resumablePdibEnabled && build.indexBuildIdent) {
+            try {
+                auto resumeInfo =
+                    index_builds::primary_driven::resumeInfo(opCtx, *build.indexBuildIdent);
+                resumeSucceeded = true;
+            } catch (const DBException& e) {
+                LOGV2(12500301,
+                      "Index build: failed to resume, aborting instead",
+                      "buildUUID"_attr = buildUUID,
+                      "error"_attr = e);
+            }
+        }
+        if (!resumeSucceeded) {
             uassertStatusOK(index_builds::primary_driven::abort(
                 opCtx,
                 build.dbName,
@@ -2129,15 +2165,7 @@ void IndexBuildsCoordinator::_onStepUpAsyncTaskFn(OperationContext* opCtx) {
                   "Aborted primary-driven index build upon step up",
                   "buildUUID"_attr = buildUUID);
         }
-
-        auto builds = activeIndexBuilds.getAllIndexBuilds();
-        forEachIndexBuild(builds,
-                          "IndexBuildsCoordinator::_onStepUpAsyncTaskFn"_sd,
-                          signalCommitQuorumAndRetrySkippedRecords);
-    } catch (const DBException& ex) {
-        LOGV2_DEBUG(7333100, 1, "Step-up task interrupted", "status"_attr = ex);
     }
-    LOGV2(7508300, "Finished performing asynchronous step-up checks on index builds");
 }
 
 IndexBuilds IndexBuildsCoordinator::stopIndexBuildsForRollback(OperationContext* opCtx) {

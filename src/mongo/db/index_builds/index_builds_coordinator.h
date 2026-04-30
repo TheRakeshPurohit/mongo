@@ -546,6 +546,12 @@ public:
 
 private:
     /**
+     * Resumes primary-driven index builds on step-up to primary. Resumed index builds will be
+     * continued in a background thread. Index builds that cannot be resumed will be aborted.
+     */
+    void _resumePrimaryDrivenIndexBuildsOnStepUp(OperationContext* opCtx);
+
+    /**
      * Sets up the in-memory and durable state of the index build.
      *
      * This function should only be called when in recovery mode, because the index tables are

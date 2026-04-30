@@ -440,5 +440,13 @@ TEST_F(UtilTest, AbortWithNoCommitTimestampDropsImmediately) {
     }
 }
 
+TEST_F(UtilTest, ResumeInfoIsUnimplemented) {
+    auto buildUUID = UUID::gen();
+    auto indexBuildIdent = ident::generateNewIndexBuildIdent(buildUUID);
+
+    ASSERT_THROWS_CODE(
+        resumeInfo(operationContext(), indexBuildIdent), DBException, ErrorCodes::NotImplemented);
+}
+
 }  // namespace
 }  // namespace mongo::index_builds::primary_driven

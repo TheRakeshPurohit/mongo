@@ -84,4 +84,9 @@ Status abort(OperationContext* opCtx,
              boost::optional<std::string> indexBuildIdent,
              const Status& cause);
 
+/**
+ * Handles retrieving the resume info of a primary-driven index build, if available.
+ */
+ResumeIndexInfo resumeInfo(OperationContext* opCtx, const std::string& indexBuildIdent);
+
 }  // namespace mongo::index_builds::primary_driven
