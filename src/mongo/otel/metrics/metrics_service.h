@@ -31,6 +31,7 @@
 
 #include "mongo/base/string_data.h"
 #include "mongo/config.h"
+#include "mongo/db/commands/server_status/server_status_metric.h"
 #include "mongo/otel/metrics/metric_names.h"
 #include "mongo/otel/metrics/metric_unit.h"
 #include "mongo/otel/metrics/metrics_counter.h"
@@ -107,6 +108,9 @@ public:
         static MetricsService metricsService;
         return metricsService;
     }
+
+    /** `metricTreeSet` is provided for testing purposes. */
+    MetricsService(MetricTreeSet& metricTreeSet = globalMetricTreeSet());
 
     /**
      * Creates an int64_t counter with the provided parameters. The function will throw an exception
@@ -298,12 +302,6 @@ public:
         const AttributeDefinition<AttributeTs>&... defs,
         const HistogramOptions& options = {});
 
-    /**
-     * Used in unit tests only. Removes all metrics registered by this MetricsService from the
-     * internal map and from the serverStatus metric trees.
-     */
-    void clearForTests();
-
     /** Returns the attribute names for a metric in definition order. Exposed for testing only. */
     MONGO_MOD_PRIVATE std::vector<std::string> getAttributeNamesForTests(MetricName name) const;
 
@@ -492,6 +490,9 @@ private:
         MetricIdentifier identifier;
         OwnedMetric metric;
     };
+
+    // Where serverStatus metrics are registered.
+    MetricTreeSet& _metricTreeSet;
 
     // Guards `_observableInstruments` and `_metrics`.
     mutable std::mutex _mutex;

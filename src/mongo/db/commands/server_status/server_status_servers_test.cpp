@@ -39,14 +39,38 @@
 #include "mongo/otel/metrics/metrics_service.h"
 #include "mongo/otel/metrics/metrics_test_util.h"
 #include "mongo/s/service_entry_point_router_role.h"
+#include "mongo/stdx/unordered_set.h"
 #include "mongo/unittest/unittest.h"
 
 #include <cstdint>
+#include <string>
 
 #include <fmt/format.h>
 
 namespace mongo {
 namespace {
+
+using otel::metrics::MetricName;
+using otel::metrics::MetricNames;
+
+/**
+ * Verifies that the provided values have not been used in this test file. Since this test is
+ * testing static objects, reusing values will result in cross-test contamination. Resetting those
+ * static objects is non-trivial as other parts of the test fixtures may rely on them being static
+ * to work correctly.
+ *
+ * TODO SERVER-125804: Remove these and make these tests simpler.
+ */
+MetricName verifyNotUsedInTest(MetricName name) {
+    static stdx::unordered_set<StringData> usedNames;
+    invariant(usedNames.insert(name.getName()).second);
+    return name;
+}
+std::string verifyPathNotUsedInTest(std::string path) {
+    static stdx::unordered_set<std::string> usedPaths;
+    invariant(usedPaths.insert(path).second);
+    return path;
+}
 
 class ServerStatusServersTest : public DBCommandTestFixture {
 public:
@@ -55,23 +79,14 @@ public:
     // serverStatus command, which includes a SpillWiredTigerServerStatusSection that requires
     // the spill engine to be initialized.
     ServerStatusServersTest() : DBCommandTestFixture(Options{}.enableSpillEngine()) {}
-
-    void setUp() override {
-        DBCommandTestFixture::setUp();
-    }
-
-    void tearDown() override {
-        otel::metrics::MetricsService::instance().clearForTests();
-        DBCommandTestFixture::tearDown();
-    }
 };
 
 TEST_F(ServerStatusServersTest, IncludeUnderMetricsSection) {
     auto& metricsService = otel::metrics::MetricsService::instance();
     otel::metrics::CounterOptions options{
-        .serverStatusOptions = otel::metrics::ServerStatusOptions{.dottedPath = "test.metric1",
-                                                                  .role = ClusterRole::None}};
-    auto& counter = metricsService.createInt64Counter(otel::metrics::MetricNames::kTest1,
+        .serverStatusOptions = otel::metrics::ServerStatusOptions{
+            .dottedPath = verifyPathNotUsedInTest("test.metric1"), .role = ClusterRole::None}};
+    auto& counter = metricsService.createInt64Counter(verifyNotUsedInTest(MetricNames::kTest1),
                                                       "description",
                                                       otel::metrics::MetricUnit::kSeconds,
                                                       options);
@@ -88,7 +103,7 @@ TEST_F(ServerStatusServersTest, ExcludeWhenServerStatusOptionsNotSet) {
     otel::metrics::CounterOptions options{};
     ASSERT_FALSE(options.serverStatusOptions.has_value());
 
-    auto& counter = metricsService.createInt64Counter(otel::metrics::MetricNames::kTest1,
+    auto& counter = metricsService.createInt64Counter(verifyNotUsedInTest(MetricNames::kTest2),
                                                       "description",
                                                       otel::metrics::MetricUnit::kSeconds,
                                                       options);
@@ -109,16 +124,13 @@ public:
         ReadWriteConcernDefaults::create(getService(), _lookupMock.getFetchDefaultsFn());
     }
 
-    void tearDown() override {
-        otel::metrics::MetricsService::instance().clearForTests();
-        ServiceContextTest::tearDown();
-    }
-
 protected:
     otel::metrics::Counter<int64_t>& createCounter(otel::metrics::MetricsService& metricsService,
                                                    otel::metrics::MetricName metricName,
                                                    std::string dottedPath,
                                                    ClusterRole role) {
+        verifyNotUsedInTest(metricName);
+        verifyPathNotUsedInTest(dottedPath);
         return metricsService.createInt64Counter(metricName,
                                                  "description",
                                                  otel::metrics::MetricUnit::kSeconds,
@@ -174,26 +186,24 @@ class ServerStatusServersRoleShardTest : public virtual service_context_test::Sh
 
 TEST_F(ServerStatusServersRoleShardTest, MergesNoneAndShardMetricTreesExcludesRouter) {
     auto& metricsService = otel::metrics::MetricsService::instance();
-    createCounter(metricsService,
-                  otel::metrics::MetricNames::kTestShardMergeNone,
-                  "test.noneMetric",
-                  ClusterRole::None)
+    createCounter(
+        metricsService, MetricNames::kTestShardMergeNone, "test.noneMetricShard", ClusterRole::None)
         .add(11);
     createCounter(metricsService,
-                  otel::metrics::MetricNames::kTestShardMergeShard,
-                  "test.shardMetric",
+                  MetricNames::kTestShardMergeShard,
+                  "test.shardMetricShard",
                   ClusterRole::ShardServer)
         .add(22);
     createCounter(metricsService,
-                  otel::metrics::MetricNames::kTestShardMergeRouter,
-                  "test.routerMetric",
+                  MetricNames::kTestShardMergeRouter,
+                  "test.routerMetricShard",
                   ClusterRole::RouterServer)
         .add(33);
 
     BSONObj section = getMetricsSection("test");
-    EXPECT_EQ(section.getIntField("noneMetric"), 11);
-    EXPECT_EQ(section.getIntField("shardMetric"), 22);
-    ASSERT_FALSE(section.hasField("routerMetric")) << section.toString();
+    EXPECT_EQ(section.getIntField("noneMetricShard"), 11);
+    EXPECT_EQ(section.getIntField("shardMetricShard"), 22);
+    ASSERT_FALSE(section.hasField("routerMetricShard")) << section.toString();
 }
 
 class ServerStatusServersRoleRouterTest : public virtual service_context_test::RouterRoleOverride,
@@ -208,25 +218,25 @@ class ServerStatusServersRoleRouterTest : public virtual service_context_test::R
 TEST_F(ServerStatusServersRoleRouterTest, MergesNoneAndRouterMetricTreesExcludesShard) {
     auto& metricsService = otel::metrics::MetricsService::instance();
     createCounter(metricsService,
-                  otel::metrics::MetricNames::kTestRouterMergeNone,
-                  "test.noneMetric",
+                  MetricNames::kTestRouterMergeNone,
+                  "test.noneMetricRouter",
                   ClusterRole::None)
         .add(11);
     createCounter(metricsService,
-                  otel::metrics::MetricNames::kTestRouterMergeShard,
-                  "test.shardMetric",
+                  MetricNames::kTestRouterMergeShard,
+                  "test.shardMetricRouter",
                   ClusterRole::ShardServer)
         .add(22);
     createCounter(metricsService,
-                  otel::metrics::MetricNames::kTestRouterMergeRouter,
-                  "test.routerMetric",
+                  MetricNames::kTestRouterMergeRouter,
+                  "test.routerMetricRouter",
                   ClusterRole::RouterServer)
         .add(33);
 
     BSONObj section = getMetricsSection("test");
-    EXPECT_EQ(section.getIntField("noneMetric"), 11);
-    ASSERT_FALSE(section.hasField("shardMetric")) << section.toString();
-    EXPECT_EQ(section.getIntField("routerMetric"), 33);
+    EXPECT_EQ(section.getIntField("noneMetricRouter"), 11);
+    ASSERT_FALSE(section.hasField("shardMetricRouter")) << section.toString();
+    EXPECT_EQ(section.getIntField("routerMetricRouter"), 33);
 }
 
 }  // namespace

@@ -246,12 +246,14 @@ void MetricsService::_registerHistogramView(
 }
 #endif  // MONGO_CONFIG_OTEL
 
+MetricsService::MetricsService(MetricTreeSet& metricTreeSet) : _metricTreeSet(metricTreeSet) {}
+
 void MetricsService::_registerServerStatusTree(
     WithLock, Metric* metricPtr, const boost::optional<ServerStatusOptions>& serverStatusOptions) {
     if (!serverStatusOptions.has_value()) {
         return;
     }
-    globalMetricTreeSet()[serverStatusOptions->role].add(
+    _metricTreeSet[serverStatusOptions->role].add(
         serverStatusOptions->dottedPath,
         std::make_unique<OtelMetricServerStatusAdapter>(metricPtr));
 }
@@ -356,17 +358,4 @@ std::vector<std::string> MetricsService::getAttributeNamesForTests(MetricName na
     return names;
 }
 
-void MetricsService::clearForTests() {
-    std::lock_guard lock(_mutex);
-#ifdef MONGO_CONFIG_OTEL
-    _observableInstruments.clear();
-#endif
-    for (auto& [name, identAndMetric] : _metrics) {
-        auto& opts = identAndMetric.identifier.serverStatusOptions;
-        if (opts.has_value()) {
-            globalMetricTreeSet()[opts->role].removeForTests(opts->dottedPath);
-        }
-    }
-    _metrics.clear();
-}
 }  // namespace mongo::otel::metrics
