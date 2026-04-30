@@ -67,7 +67,7 @@ namespace mongo {
  *
  * Example:
  *
- * #include "mongo/db/replica_set_aware_service.h"
+ * #include "mongo/db/repl/replica_set_aware_service.h"
  *
  * class FooService : public ReplicaSetAwareService<FooService> {
  * public:
@@ -88,13 +88,18 @@ namespace mongo {
  *     void onSetCurrentConfig(OperationContext* opCtx) final {
  *         // ...
  *     }
+ *
+ *     void onConsistentDataAvailable(OperationContext* opCtx, bool isMajority, bool isRollback)
+ * final {
+ *         // ...
+ *     }
  *     void onShutdown() final {
  *         // ...
  *     }
- *     void onStepUpBegin(OperationContext* opCtx) final {
+ *     void onStepUpBegin(OperationContext* opCtx, long long term) final {
  *         // ...
  *     }
- *     void onStepUpComplete(OperationContext* opCtx) final {
+ *     void onStepUpComplete(OperationContext* opCtx, long long term) final {
  *         // ...
  *     }
  *     void onStepDown() final {
@@ -104,6 +109,9 @@ namespace mongo {
  *         // ...
  *     }
  *     void onBecomeArbiter() final {
+ *         // ...
+ *     }
+ *     std::string getServiceName() final {
  *         // ...
  *     }
  * };

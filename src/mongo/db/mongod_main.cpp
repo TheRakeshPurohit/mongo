@@ -183,6 +183,7 @@
 #include "mongo/db/shard_role/shard_catalog/database_holder_impl.h"
 #include "mongo/db/shard_role/shard_catalog/database_sharding_state_factory_shard.h"
 #include "mongo/db/shard_role/shard_catalog/db_raii.h"
+#include "mongo/db/shard_role/shard_catalog/shard_catalog_history_cleanup.h"
 #include "mongo/db/shard_role/shard_catalog/shard_filtering_metadata_refresh.h"
 #include "mongo/db/sharding_environment/config_server_op_observer.h"
 #include "mongo/db/sharding_environment/grid.h"
@@ -989,7 +990,8 @@ ExitCode _initAndListen(ServiceContext* serviceContext) {
         }
 
         storageEngine->startTimestampMonitor(
-            {&catalog_helper::kCollectionCatalogCleanupTimestampListener});
+            {&catalog_helper::kCollectionCatalogCleanupTimestampListener,
+             &shard_catalog_helper::kShardCatalogHistoryCleanupTimestampListener});
 
         startFLECrud(serviceContext);
 

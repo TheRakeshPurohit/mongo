@@ -1001,11 +1001,6 @@ void StorageEngineImpl::TimestampMonitor::_startup() {
                     return;
                 }
 
-                // The TimestampMonitor is an important background cleanup task for the storage
-                // engine and needs to be able to make progress to free up resources.
-                ScopedAdmissionPriority<ExecutionAdmissionContext> immediatePriority(
-                    opCtx, AdmissionContext::Priority::kExempt);
-
                 // The checkpoint timestamp is not cached in mongod and needs to be fetched with
                 // a call into WiredTiger, all the other timestamps are cached in mongod.
                 Timestamps timestamps;
