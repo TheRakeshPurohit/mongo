@@ -527,8 +527,6 @@ private:
 
     // TODO (SERVER-98118): Remove once v9.0 become last-lts.
     void _resetPlacementHistory(OperationContext* opCtx, const FCV requestedVersion) {
-        // TODO (SERVER-108188): Avoid resetting config.placementHistory if its initialization
-        // metadata already bring the expected version.
         if (!feature_flags::gFeatureFlagChangeStreamPreciseShardTargeting.isEnabledOnVersion(
                 requestedVersion)) {
             return;
