@@ -10,36 +10,67 @@ import time
 import unittest
 from unittest.mock import call, patch
 
-MAX_BAZEL_BUILD_RETRIES = 3
-INITIAL_BAZEL_BUILD_RETRY_DELAY_SECONDS = 1
+BAZEL_NO_REMOTE_EXEC_CONFIG = "--config=no-remote-exec"
+# Query only the resmoke suites subtree instead of all targets to keep this
+# end-to-end test's runtime reasonable.
+RESMOKE_CONFIG_CQUERY = "kind(resmoke_config, //jstests/suites/...)"
+RESMOKE_CONFIG_STARLARK_EXPR = (
+    "': '.join([str(target.label).replace('@@','')] + " "[f.path for f in target.files.to_list()])"
+)
+MAX_BAZEL_COMMAND_RETRIES = 3
+INITIAL_BAZEL_COMMAND_RETRY_DELAY_SECONDS = 1
 
 
-def _run_bazel_build_with_backoff() -> subprocess.CompletedProcess[str]:
-    build_command = [
+def _bazel_build_command() -> list[str]:
+    return [
         "bazel",
         "build",
-        "//...",
+        BAZEL_NO_REMOTE_EXEC_CONFIG,
         "--build_tag_filters=resmoke_config",
-        "--config=local",
+        "//...",
     ]
 
-    for attempt in range(MAX_BAZEL_BUILD_RETRIES + 1):
-        build_result = subprocess.run(build_command, capture_output=True, text=True)
-        if build_result.returncode == 0:
-            return build_result
 
-        if attempt == MAX_BAZEL_BUILD_RETRIES:
-            return build_result
+def _bazel_cquery_command() -> list[str]:
+    return [
+        "bazel",
+        "cquery",
+        BAZEL_NO_REMOTE_EXEC_CONFIG,
+        "--output=starlark",
+        "--starlark:expr",
+        RESMOKE_CONFIG_STARLARK_EXPR,
+        RESMOKE_CONFIG_CQUERY,
+    ]
 
-        backoff_seconds = INITIAL_BAZEL_BUILD_RETRY_DELAY_SECONDS * (2**attempt)
+
+def _run_bazel_command_with_backoff(
+    command: list[str], description: str
+) -> subprocess.CompletedProcess[str]:
+    for attempt in range(MAX_BAZEL_COMMAND_RETRIES + 1):
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode == 0:
+            return result
+
+        if attempt == MAX_BAZEL_COMMAND_RETRIES:
+            return result
+
+        backoff_seconds = INITIAL_BAZEL_COMMAND_RETRY_DELAY_SECONDS * (2**attempt)
         print(
-            "Bazel build failed with exit code "
-            f"{build_result.returncode} (attempt {attempt + 1}/{MAX_BAZEL_BUILD_RETRIES + 1}); "
+            f"Bazel {description} failed with exit code "
+            f"{result.returncode} (attempt {attempt + 1}/{MAX_BAZEL_COMMAND_RETRIES + 1}); "
             f"retrying in {backoff_seconds}s..."
         )
         time.sleep(backoff_seconds)
 
     raise AssertionError("unreachable")
+
+
+def _run_bazel_build_with_backoff() -> subprocess.CompletedProcess[str]:
+    return _run_bazel_command_with_backoff(_bazel_build_command(), "build")
+
+
+def _run_bazel_cquery_with_backoff() -> subprocess.CompletedProcess[str]:
+    return _run_bazel_command_with_backoff(_bazel_cquery_command(), "cquery")
 
 
 @unittest.skipUnless(
@@ -54,28 +85,18 @@ class TestBazelBurnInEnd2End(unittest.TestCase):
         if build_result.returncode != 0:
             raise RuntimeError(
                 "Failed to build resmoke configs with bazel after "
-                f"{MAX_BAZEL_BUILD_RETRIES + 1} attempts:\n"
+                f"{MAX_BAZEL_COMMAND_RETRIES + 1} attempts:\n"
                 f"stdout: {build_result.stdout}\n"
                 f"stderr: {build_result.stderr}"
             )
 
         print("Generating resmoke_suite_configs.yml...")
-        cquery_result = subprocess.run(
-            [
-                "bazel",
-                "cquery",
-                "kind(resmoke_config, //jstests/suites/...)",  # A subset of reality (//...), to speed up this test's runtime.
-                "--output=starlark",
-                "--starlark:expr",
-                "': '.join([str(target.label).replace('@@','')] + [f.path for f in target.files.to_list()])",
-            ],
-            capture_output=True,
-            text=True,
-        )
+        cquery_result = _run_bazel_cquery_with_backoff()
 
         if cquery_result.returncode != 0:
             raise RuntimeError(
-                f"Failed to query resmoke configs with bazel:\n"
+                "Failed to query resmoke configs with bazel after "
+                f"{MAX_BAZEL_COMMAND_RETRIES + 1} attempts:\n"
                 f"stdout: {cquery_result.stdout}\n"
                 f"stderr: {cquery_result.stderr}"
             )
@@ -226,10 +247,22 @@ class TestBazelBurnInEnd2End(unittest.TestCase):
                     f.write(content)
 
 
-class TestRunBazelBuildWithBackoff(unittest.TestCase):
+class TestBazelCommandConfiguration(unittest.TestCase):
+    def assert_uses_bazelrc_raapi_without_remote_execution(self, command):
+        self.assertIn(BAZEL_NO_REMOTE_EXEC_CONFIG, command)
+        self.assertNotIn("--config=local", command)
+
+    def test_build_uses_bazelrc_raapi_without_remote_execution(self):
+        self.assert_uses_bazelrc_raapi_without_remote_execution(_bazel_build_command())
+
+    def test_cquery_uses_bazelrc_raapi_without_remote_execution(self):
+        self.assert_uses_bazelrc_raapi_without_remote_execution(_bazel_cquery_command())
+
+
+class TestRunBazelCommandWithBackoff(unittest.TestCase):
     @patch("buildscripts.tests.burn_in.test_bazel_burn_in_end2end.time.sleep")
     @patch("buildscripts.tests.burn_in.test_bazel_burn_in_end2end.subprocess.run")
-    def test_retries_until_success(self, run_mock, sleep_mock):
+    def test_build_retries_until_success(self, run_mock, sleep_mock):
         run_mock.side_effect = [
             subprocess.CompletedProcess(
                 args=["bazel"], returncode=1, stdout="", stderr="failed once"
@@ -242,7 +275,7 @@ class TestRunBazelBuildWithBackoff(unittest.TestCase):
 
         result = _run_bazel_build_with_backoff()
         expected_backoffs = [
-            call(INITIAL_BAZEL_BUILD_RETRY_DELAY_SECONDS * (2**attempt)) for attempt in range(2)
+            call(INITIAL_BAZEL_COMMAND_RETRY_DELAY_SECONDS * (2**attempt)) for attempt in range(2)
         ]
 
         self.assertEqual(0, result.returncode)
@@ -252,24 +285,38 @@ class TestRunBazelBuildWithBackoff(unittest.TestCase):
 
     @patch("buildscripts.tests.burn_in.test_bazel_burn_in_end2end.time.sleep")
     @patch("buildscripts.tests.burn_in.test_bazel_burn_in_end2end.subprocess.run")
+    def test_cquery_retries_until_success(self, run_mock, sleep_mock):
+        run_mock.side_effect = [
+            subprocess.CompletedProcess(args=["bazel"], returncode=1, stdout="", stderr="failed"),
+            subprocess.CompletedProcess(args=["bazel"], returncode=0, stdout="success", stderr=""),
+        ]
+
+        result = _run_bazel_cquery_with_backoff()
+
+        self.assertEqual(0, result.returncode)
+        self.assertEqual(2, run_mock.call_count)
+        sleep_mock.assert_called_once_with(INITIAL_BAZEL_COMMAND_RETRY_DELAY_SECONDS)
+
+    @patch("buildscripts.tests.burn_in.test_bazel_burn_in_end2end.time.sleep")
+    @patch("buildscripts.tests.burn_in.test_bazel_burn_in_end2end.subprocess.run")
     def test_returns_last_failure_after_max_retries(self, run_mock, sleep_mock):
         failures = [
             subprocess.CompletedProcess(
                 args=["bazel"], returncode=1, stdout="", stderr=f"failed {idx}"
             )
-            for idx in range(MAX_BAZEL_BUILD_RETRIES + 1)
+            for idx in range(MAX_BAZEL_COMMAND_RETRIES + 1)
         ]
         run_mock.side_effect = failures
 
         result = _run_bazel_build_with_backoff()
         expected_backoffs = [
-            call(INITIAL_BAZEL_BUILD_RETRY_DELAY_SECONDS * (2**attempt))
-            for attempt in range(MAX_BAZEL_BUILD_RETRIES)
+            call(INITIAL_BAZEL_COMMAND_RETRY_DELAY_SECONDS * (2**attempt))
+            for attempt in range(MAX_BAZEL_COMMAND_RETRIES)
         ]
 
         self.assertEqual(1, result.returncode)
-        self.assertEqual(MAX_BAZEL_BUILD_RETRIES + 1, run_mock.call_count)
-        self.assertEqual(MAX_BAZEL_BUILD_RETRIES, sleep_mock.call_count)
+        self.assertEqual(MAX_BAZEL_COMMAND_RETRIES + 1, run_mock.call_count)
+        self.assertEqual(MAX_BAZEL_COMMAND_RETRIES, sleep_mock.call_count)
         sleep_mock.assert_has_calls(expected_backoffs)
 
 
