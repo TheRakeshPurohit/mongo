@@ -195,6 +195,10 @@ bool shouldRelaxConstraints(OperationContext* opCtx, const CollectionPtr& collec
     return !isPrimary;
 }
 
+using OnSpillFn = sorter::ContainerBasedSpiller<key_string::Value,
+                                                mongo::NullValue,
+                                                BtreeExternalSortComparison>::OnSpillFn;
+
 std::shared_ptr<sorter::Spiller<key_string::Value, mongo::NullValue, BtreeExternalSortComparison>>
 makeSpiller(OperationContext* opCtx,
             const CollectionPtr& collection,
@@ -203,7 +207,8 @@ makeSpiller(OperationContext* opCtx,
             SorterFileStats& fileStats,
             SorterContainerStats& containerStats,
             const DatabaseName& dbName,
-            ContainerWriteBehavior containerWriteBehavior) {
+            ContainerWriteBehavior containerWriteBehavior,
+            OnSpillFn onSpill = nullptr) {
     if (containerWriteBehavior == ContainerWriteBehavior::kReplicate) {
         invariant(!stateInfo);
         return std::make_shared<sorter::ContainerBasedSpiller<key_string::Value,
@@ -215,11 +220,12 @@ makeSpiller(OperationContext* opCtx,
             containerStats,
             dbName,
             sorter::kLatestChecksumVersion,
-            [] {},
+            std::move(onSpill),
             primaryDrivenIndexBuildSorterInsertionBatchSize.load(),
             primaryDrivenIndexBuildSorterInsertionBatchBytes.load(),
             static_cast<int64_t>(indexBuildSpillingMinAvailableDiskSpaceBytes.load()));
     }
+    invariant(!onSpill);
 
     using FileBasedSpiller =
         sorter::FileBasedSpiller<key_string::Value, mongo::NullValue, BtreeExternalSortComparison>;
@@ -807,7 +813,12 @@ Status MultiIndexBlock::insertAllDocumentsInCollection(
                                     index.real->getSorterFileStats(),
                                     index.real->getSorterContainerStats(),
                                     collection->nss().dbName(),
-                                    _containerWriteBehavior),
+                                    _containerWriteBehavior,
+                                    [this, opCtx] {
+                                        if (_isResumable) {
+                                            _writeStateToContainer(opCtx);
+                                        }
+                                    }),
                         getEachIndexBuildMaxMemoryUsageBytes(boost::none, _indexes.size()),
                         /*stateInfo=*/boost::none,
                         collection->nss().dbName(),
@@ -1613,9 +1624,21 @@ BSONObj MultiIndexBlock::_constructStateObject() const {
         IndexStateInfo indexStateInfo;
 
         if (_phase != IndexBuildPhaseEnum::kDrainWrites) {
-            // Persist the data to disk so that we see all of the data that has been inserted into
-            // the Sorter.
-            indexStateInfo = index.bulk->persistDataForShutdown();
+            switch (_containerWriteBehavior) {
+                case ContainerWriteBehavior::kDoNotReplicate: {
+                    // Persist the data to disk so that we see all of the data that has been
+                    // inserted into the Sorter.
+                    indexStateInfo = index.bulk->persistDataForShutdown();
+                    break;
+                }
+                case ContainerWriteBehavior::kReplicate: {
+                    // When replicating container writes, the persisted state is written via a
+                    // callback that is run when a spill occurs. So, we can simply get persisted
+                    // state without forcing another spill.
+                    indexStateInfo = index.bulk->getPersistedState();
+                    break;
+                }
+            }
         }
 
         auto& indexBuildInfo = index.block->getIndexBuildInfo();
