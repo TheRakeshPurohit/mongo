@@ -253,14 +253,6 @@ void SessionCatalogMigrationDestination::start(ServiceContext* service) {
         try {
             _retrieveSessionStateFromSource(service);
         } catch (const DBException& ex) {
-            if (ex.code() == ErrorCodes::CommandNotFound) {
-                // TODO SERVER-123503: remove this after v3.7
-                //
-                // This means that the donor shard is running at an older version so it is safe to
-                // just end this because there is no session information to transfer.
-                return;
-            }
-
             _errorOccurred(ex.toString());
         }
     });
