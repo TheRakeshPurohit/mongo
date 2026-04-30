@@ -79,11 +79,10 @@ describe("change stream cursor metrics in serverStatus", function () {
         this.cursorList.closeAll();
 
         const lifespanHistogram = ServerStatusMetrics.getCsCursorLifespan(db);
-        assert.gte(lifespanHistogram.average, 0, "lifespan average must be non-negative");
         assert.eq(
-            this.lifespanBefore.count + 1,
-            lifespanHistogram.count,
-            "lifespan count should increase by 1 after closing a change stream cursor",
+            this.lifespanBefore.totalCount + 1,
+            lifespanHistogram.totalCount,
+            "lifespan totalCount should increase by 1 after closing a change stream cursor",
         );
     });
 

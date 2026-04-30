@@ -94,6 +94,12 @@ struct HistogramOptions {
      * information.
      */
     boost::optional<std::vector<double>> explicitBucketBoundaries;
+    /**
+     * Controls how the histogram is serialized to BSON (currently used for server status
+     * reporting). Defaults to kAverage, which is cheaper since it only tracks an exponential
+     * moving average and a total count. Use kBucketCounts if per-bucket counts are needed.
+     */
+    HistogramSerializationFormat serializationFormat = HistogramSerializationFormat::kAverage;
 };
 
 /**
@@ -651,9 +657,16 @@ Histogram<T, AttributeTs...>& MetricsService::_createHistogram(
             auto meter = opentelemetry::metrics::Provider::GetMeterProvider()->GetMeter(
                 std::string{kMeterName});
             return std::make_unique<HistogramImpl<T, AttributeTs...>>(
-                *meter, nameStr, description, unitStr, options.explicitBucketBoundaries, defs...);
+                *meter,
+                nameStr,
+                description,
+                unitStr,
+                options.serializationFormat,
+                options.explicitBucketBoundaries,
+                defs...);
 #else
-            return std::make_unique<HistogramImpl<T, AttributeTs...>>(defs...);
+            return std::make_unique<HistogramImpl<T, AttributeTs...>>(
+                options.serializationFormat, options.explicitBucketBoundaries, defs...);
 #endif  // MONGO_CONFIG_OTEL
         },
         /* addObservable= */

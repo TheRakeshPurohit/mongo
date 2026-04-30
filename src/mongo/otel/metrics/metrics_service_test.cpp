@@ -641,7 +641,7 @@ TEST_F(SerializeMetricsTreeTest, Counter) {
     ASSERT_EQ(obj["metrics"]["ingress"]["openConnections"].Long(), 42);
 }
 
-TEST_F(SerializeMetricsTreeTest, Histogram) {
+TEST_F(SerializeMetricsTreeTest, HistogramWithoutExplicitBoundaries) {
     HistogramOptions options{.serverStatusOptions = ServerStatusOptions{
                                  .dottedPath = "ops.latencyHistogram",
                                  .role = ClusterRole::None,
@@ -654,7 +654,30 @@ TEST_F(SerializeMetricsTreeTest, Histogram) {
     metricTreeSet[ClusterRole::None].appendTo(builder);
     const BSONObj obj = builder.obj();
     ASSERT_BSONOBJ_EQ(obj["metrics"]["ops"]["latencyHistogram"].Obj(),
-                      BSON("average" << 3.0 << "count" << 1));
+                      BSON("average" << 3.0 << "totalCount" << 1LL));
+}
+
+TEST_F(SerializeMetricsTreeTest, HistogramWithExplicitBoundaries) {
+    HistogramOptions options{
+        .serverStatusOptions =
+            ServerStatusOptions{.dottedPath = "ops.latencyHistogram", .role = ClusterRole::None},
+        .explicitBucketBoundaries = std::vector<double>{2, 4},
+        .serializationFormat = HistogramSerializationFormat::kBucketCounts};
+    auto& histogram = metricsService.createDoubleHistogram(
+        MetricNames::kTest2, "description", MetricUnit::kSeconds, options);
+
+    histogram.record(1);  // (-inf, 2)
+    histogram.record(2);  // [2, 4) — value at boundary goes into [boundary, ...)
+    histogram.record(3);  // [2, 4)
+    histogram.record(5);  // [4, inf)
+
+    BSONObjBuilder builder;
+    metricTreeSet[ClusterRole::None].appendTo(builder);
+    const BSONObj obj = builder.obj();
+    ASSERT_BSONOBJ_EQ(obj["metrics"]["ops"]["latencyHistogram"].Obj(),
+                      BSON("(-inf, 2)" << BSON("count" << 1LL) << "[2, 4)" << BSON("count" << 2LL)
+                                       << "[4, inf)" << BSON("count" << 1LL) << "totalCount"
+                                       << 4LL));
 }
 
 TEST_F(SerializeMetricsTreeTest, RoleShard) {
@@ -1901,6 +1924,15 @@ TEST_F(CreateHistogramTest, RecordsDoubleValuesExplicitBoundaries) {
     }
 }
 
+TEST_F(CreateHistogramTest, DefaultSerializationFormatIsAverage) {
+    auto& histogram = metricsService.createInt64Histogram(
+        MetricNames::kTest1, "description", MetricUnit::kSeconds);
+    histogram.record(5);
+
+    const std::string key = "metric";
+    BSONObj outer = histogram.serializeToBson(key);
+    ASSERT_BSONOBJ_EQ(outer[key].Obj(), BSON("average" << 5.0 << "totalCount" << 1LL));
+}
 
 using GetAttributeNamesForTestingTest = MetricsServiceTest;
 

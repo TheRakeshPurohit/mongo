@@ -36,9 +36,14 @@
 #include "mongo/otel/metrics/metrics_metric.h"
 #include "mongo/platform/rwmutex.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/histogram.h"
 #include "mongo/util/moving_average.h"
 
+#include <algorithm>
+#include <atomic>
+
 #include <absl/container/flat_hash_set.h>
+#include <fmt/format.h>
 
 #ifdef MONGO_CONFIG_OTEL
 #include <opentelemetry/context/context.h>
@@ -110,6 +115,11 @@ public:
     }
 };
 
+// OTel's default explicit bucket boundaries, matching those used internally by the OTel SDK when
+// no explicit boundaries are configured.
+constexpr inline std::array<double, 15> kDefaultBucketBoundaries{
+    0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000};
+
 /**
  * Thin wrapper around OpenTelemetry Histogram for recording distributions of values.
  *
@@ -139,10 +149,14 @@ public:
                   std::string name,
                   std::string description,
                   std::string unit,
-                  boost::optional<std::vector<double>> explicitBucketBoundaries,
+                  HistogramSerializationFormat serializationFormat,
+                  boost::optional<std::vector<double>> explicitBucketBoundaries = boost::none,
                   const AttributeDefinition<AttributeTs>&... defs);
 #else
-    explicit HistogramImpl(const AttributeDefinition<AttributeTs>&... defs);
+    explicit HistogramImpl(
+        HistogramSerializationFormat serializationFormat,
+        boost::optional<std::vector<double>> explicitBucketBoundaries = boost::none,
+        const AttributeDefinition<AttributeTs>&... defs);
 #endif  // MONGO_CONFIG_OTEL
 
     /**
@@ -154,24 +168,41 @@ public:
     using Histogram<T, AttributeTs...>::record;
 
     /**
-     * Serializes the internal metrics `_avg` and `_count` to BSON, aggregated across all
-     * attribute combinations.
+     * Serializes histogram data to BSON, aggregated across all attribute combinations.
+     *
+     * - If the histogram is configured to use the kBucketCounts serialization format, outputs
+     *   per-bucket counts with range-string keys plus a `totalCount` field. Uses
+     *   explicitBucketBoundaries when it is set, otherwise kDefaultBucketBoundaries.
+     * - If it is configured to use the kAverage serialization format, outputs an "average"
+     *   field (exponential moving average) and a "totalCount" field.
      */
     BSONObj serializeToBson(const std::string& key) const override;
 
 #ifdef MONGO_CONFIG_OTEL
     /**
      * Resets the HistogramImpl by creating a new OpenTelemetry histogram implementation and
-     * resetting the internal metrics _avg and _count.
+     * zeroing all internal metrics (_avg, _count, _bucketCounts).
      */
     void reset(opentelemetry::metrics::Meter* meter) override;
 #endif  // MONGO_CONFIG_OTEL
 
 private:
-    // Internal metrics used for server status reporting, aggregated across all attribute
-    // combinations.
+    // The smoothing factor for the exponential moving average. See moving_average.h.
+    static constexpr double kAlpha = 0.2;
+
+    static mongo::Histogram<double> makeBucketCountsHistogram(
+        const boost::optional<std::vector<double>>& explicitBoundaries) {
+        return mongo::Histogram<double>(explicitBoundaries.value_or(
+            std::vector<double>(kDefaultBucketBoundaries.begin(), kDefaultBucketBoundaries.end())));
+    }
+
+    // Internal metrics used for BSON serialization, aggregated across all attribute combinations.
     MovingAverage _avg;
     Atomic<int64_t> _count;
+    // Per-bucket counts. Only present when the histogram is configured to use the kBucketCounts
+    // serialization format. Uses explicitBucketBoundaries when it is set, otherwise
+    // kDefaultBucketBoundaries.
+    boost::optional<mongo::Histogram<double>> _bucketCounts;
 
     std::array<std::string, sizeof...(AttributeTs)> _attributeNames;
 
@@ -191,16 +222,13 @@ private:
     const std::string _description;
     const std::string _unit;
 
-    // Read-write mutex that protects the _histogram pointer.
+    // Read-write mutex that protects _histogram and _bucketCounts.
     mutable WriteRarelyRWMutex _rwMutex;
 
     // The underlying OpenTelemetry histogram implementation.
     std::unique_ptr<opentelemetry::metrics::Histogram<UnderlyingType>> _histogram;
 #endif  // MONGO_CONFIG_OTEL
 };
-
-// The smoothing factor for the exponential moving average. See moving_average.h.
-constexpr double kAlpha = 0.2;
 
 #ifdef MONGO_CONFIG_OTEL
 template <HistogramValueType T, typename... AttributeTs>
@@ -228,10 +256,15 @@ HistogramImpl<T, AttributeTs...>::HistogramImpl(
     std::string name,
     std::string description,
     std::string unit,
+    HistogramSerializationFormat serializationFormat,
     boost::optional<std::vector<double>> explicitBucketBoundaries,
     const AttributeDefinition<AttributeTs>&... defs)
     : Histogram<T, AttributeTs...>(std::move(explicitBucketBoundaries)),
       _avg(kAlpha),
+      _bucketCounts(serializationFormat == HistogramSerializationFormat::kBucketCounts
+                        ? boost::optional<mongo::Histogram<double>>(
+                              makeBucketCountsHistogram(this->explicitBucketBoundaries))
+                        : boost::none),
       _attributeNames{defs.name...},
       _ownedValueLists(makeOwnedAttributeValueLists(defs...)),
       _validCombinations([this] {
@@ -252,8 +285,16 @@ HistogramImpl<T, AttributeTs...>::HistogramImpl(
 }
 #else
 template <HistogramValueType T, typename... AttributeTs>
-HistogramImpl<T, AttributeTs...>::HistogramImpl(const AttributeDefinition<AttributeTs>&... defs)
-    : _avg(kAlpha),
+HistogramImpl<T, AttributeTs...>::HistogramImpl(
+    HistogramSerializationFormat serializationFormat,
+    boost::optional<std::vector<double>> explicitBucketBoundaries,
+    const AttributeDefinition<AttributeTs>&... defs)
+    : Histogram<T, AttributeTs...>(std::move(explicitBucketBoundaries)),
+      _avg(kAlpha),
+      _bucketCounts(serializationFormat == HistogramSerializationFormat::kBucketCounts
+                        ? boost::optional<mongo::Histogram<double>>(
+                              makeBucketCountsHistogram(this->explicitBucketBoundaries))
+                        : boost::none),
       _attributeNames{defs.name...},
       _ownedValueLists(makeOwnedAttributeValueLists(defs...)),
       _validCombinations([this] {
@@ -298,6 +339,13 @@ void HistogramImpl<T, AttributeTs...>::record(T value, const Attributes& attribu
                                AttributesKeyValueIterable(std::move(nameAndValues)),
                                opentelemetry::context::Context{});
         }
+        if (_bucketCounts) {
+            _bucketCounts->increment(static_cast<double>(value));
+        }
+    }
+#else
+    if (_bucketCounts) {
+        _bucketCounts->increment(static_cast<double>(value));
     }
 #endif  // MONGO_CONFIG_OTEL
     _avg.addSample(value);
@@ -307,10 +355,17 @@ void HistogramImpl<T, AttributeTs...>::record(T value, const Attributes& attribu
 template <HistogramValueType T, typename... AttributeTs>
 BSONObj HistogramImpl<T, AttributeTs...>::serializeToBson(const std::string& key) const {
     BSONObjBuilder builder;
-    BSONObjBuilder metrics{builder.subobjStart(key)};
-    metrics.append("average", _avg.get().value_or(0.0));
-    metrics.append("count", _count.load());
-    metrics.doneFast();
+    if (!_bucketCounts) {
+        BSONObjBuilder metrics{builder.subobjStart(key)};
+        metrics.append("average", _avg.get().value_or(0.0));
+        metrics.append("totalCount", static_cast<long long>(_count.load()));
+        metrics.doneFast();
+    } else {
+#ifdef MONGO_CONFIG_OTEL
+        auto readLock = _rwMutex.readLock();
+#endif
+        mongo::appendHistogram(builder, *_bucketCounts, key);
+    }
     return builder.obj();
 }
 
@@ -321,6 +376,9 @@ void HistogramImpl<T, AttributeTs...>::reset(opentelemetry::metrics::Meter* mete
     _avg.reset();
     _count.store(0);
     auto writeLock = _rwMutex.writeLock();
+    if (_bucketCounts) {
+        *_bucketCounts = makeBucketCountsHistogram(this->explicitBucketBoundaries);
+    }
     _histogram = createOpenTelemetryHistogram(*meter, _name, _description, _unit);
 };
 #endif  // MONGO_CONFIG_OTEL

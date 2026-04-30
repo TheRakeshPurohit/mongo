@@ -45,6 +45,12 @@ enum class ReportingPolicy {
     kUnconditionally,     // Report regardless of the value.
 };
 
+/** Controls how histogram metric is serialized by serializeToBson(). */
+enum class HistogramSerializationFormat {
+    kAverage,       ///< Report exponential moving average and total count.
+    kBucketCounts,  ///< Report per-bucket counts and total count.
+};
+
 /**
  * An abstract class for operations that are common among all metrics.
  */

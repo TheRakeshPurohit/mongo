@@ -72,9 +72,9 @@ std::unique_ptr<HistogramImpl<T>> createHistogramForTest() {
         "name",
         "description",
         "unit",
-        boost::none);
+        HistogramSerializationFormat::kAverage);
 #else
-    return std::make_unique<HistogramImpl<T>>();
+    return std::make_unique<HistogramImpl<T>>(HistogramSerializationFormat::kAverage);
 #endif  // MONGO_CONFIG_OTEL
 }
 
