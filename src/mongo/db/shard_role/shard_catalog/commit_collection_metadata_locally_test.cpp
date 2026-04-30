@@ -331,7 +331,7 @@ TEST_F(CommitCollectionMetadataLocallyTest, RefineShardKeyChunklessPersistsColle
 
     // Simulate a refine to (epoch2, ts2) on the same UUID with an extended key pattern.
     const OID epoch2 = OID::gen();
-    const Timestamp ts2(Date_t::now());
+    const Timestamp ts2 = collType1.getTimestamp() + 1;
     const BSONObj newKeyPattern = BSON("_id" << 1 << "extra" << 1);
     CollectionType collType2{
         kTestNss, epoch2, ts2, Date_t::now(), collType1.getUuid(), newKeyPattern};
