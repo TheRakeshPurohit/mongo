@@ -397,8 +397,7 @@ bool IndexBuildsManager::abortIndexBuild(OperationContext* opCtx,
 
 bool IndexBuildsManager::abortIndexBuildWithoutCleanup(OperationContext* opCtx,
                                                        const CollectionPtr& collection,
-                                                       const UUID& buildUUID,
-                                                       bool isResumable) {
+                                                       const UUID& buildUUID) {
     auto builder = _getBuilder(buildUUID);
     if (!builder.isOK()) {
         return false;
@@ -414,9 +413,17 @@ bool IndexBuildsManager::abortIndexBuildWithoutCleanup(OperationContext* opCtx,
     }
     LOGV2(20347, "Index build: aborted without cleanup", attrs);
 
-    builder.getValue()->abortWithoutCleanup(opCtx, collection, isResumable);
+    builder.getValue()->abortWithoutCleanup(opCtx, collection);
 
     return true;
+}
+
+void IndexBuildsManager::setIsResumable(const UUID& buildUUID, bool isResumable) {
+    auto builder = _getBuilder(buildUUID);
+    if (!builder.isOK()) {
+        return;
+    }
+    builder.getValue()->setIsResumable(isResumable);
 }
 
 bool IndexBuildsManager::isBackgroundBuilding(const UUID& buildUUID) {

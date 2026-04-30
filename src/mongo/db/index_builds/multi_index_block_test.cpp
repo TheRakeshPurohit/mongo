@@ -286,8 +286,7 @@ TEST_F(MultiIndexBlockTest, AbortWithoutCleanupAfterInsertingSingleDocument) {
         {},
         /*saveCursorBeforeWrite*/ []() {},
         /*restoreCursorAfterWrite*/ []() {}));
-    auto isResumable = false;
-    indexer->abortWithoutCleanup(operationContext(), coll.get(), isResumable);
+    indexer->abortWithoutCleanup(operationContext(), coll.get());
 }
 
 TEST_F(MultiIndexBlockTest, PersistResumeStateOnAbortWithoutCleanup) {
@@ -314,8 +313,8 @@ TEST_F(MultiIndexBlockTest, PersistResumeStateOnAbortWithoutCleanup) {
                                                    boost::none));
     ASSERT_EQUALS(1U, specs.size());
 
-    auto isResumable = true;
-    indexer->abortWithoutCleanup(operationContext(), coll.get(), isResumable);
+    indexer->setIsResumable(true);
+    indexer->abortWithoutCleanup(operationContext(), coll.get());
     auto indexBuildIdent = findPersistedResumeState(
         operationContext(), buildUUID, IndexBuildPhaseEnum::kInitialized, autoColl->uuid());
     ASSERT_TRUE(indexBuildIdent);
@@ -347,8 +346,8 @@ TEST_F(MultiIndexBlockTest, PersistResumeStateOnRequestAndCommit) {
                                                    boost::none));
     ASSERT_EQUALS(1U, specs.size());
 
-    auto isResumable = true;
-    indexer->persistResumeState(operationContext(), coll.get(), isResumable);
+    indexer->setIsResumable(true);
+    indexer->persistResumeState(operationContext(), coll.get());
     auto indexBuildIdent = findPersistedResumeState(
         operationContext(), buildUUID, IndexBuildPhaseEnum::kInitialized, autoColl->uuid());
     ASSERT_TRUE(indexBuildIdent);
@@ -390,13 +389,13 @@ TEST_F(MultiIndexBlockTest, PersistResumeStateOnRequestAndOnAbort) {
                                                    boost::none));
     ASSERT_EQUALS(1U, specs.size());
 
-    auto isResumable = true;
-    indexer->persistResumeState(operationContext(), coll.get(), isResumable);
+    indexer->setIsResumable(true);
+    indexer->persistResumeState(operationContext(), coll.get());
     auto indexBuildIdent = findPersistedResumeState(
         operationContext(), buildUUID, IndexBuildPhaseEnum::kInitialized, autoColl->uuid());
     ASSERT_TRUE(indexBuildIdent);
 
-    indexer->abortWithoutCleanup(operationContext(), coll.get(), isResumable);
+    indexer->abortWithoutCleanup(operationContext(), coll.get());
     indexBuildIdent = findPersistedResumeState(operationContext(), buildUUID);
     ASSERT_TRUE(indexBuildIdent);
 
@@ -970,8 +969,8 @@ TEST_F(MultiIndexBlockTest, AbortWithoutCleanupDoesNotDropTables) {
 
     auto sideWritesIdent = *indexBuildInfo.sideWritesIdent;
 
-    auto isResumable = true;
-    indexer->abortWithoutCleanup(operationContext(), coll.get(), isResumable);
+    indexer->setIsResumable(true);
+    indexer->abortWithoutCleanup(operationContext(), coll.get());
 
     // After abortWithoutCleanup, the ident should still exist and not be drop-pending.
     ASSERT_TRUE(storageEngine->getEngine()->hasIdent(
@@ -1268,7 +1267,7 @@ TEST_F(MultiIndexBlockTest, PersistResumeStateUsesContainerWrites) {
     ASSERT_TRUE(storageEngine->getEngine()->hasIdent(
         *shard_role_details::getRecoveryUnit(operationContext()), handle.indexBuildIdent));
 
-    indexer->persistResumeState(operationContext(), coll.get(), /*isResumable=*/true);
+    indexer->persistResumeState(operationContext(), coll.get());
 
     // Exactly one container insert against the resume-state ident, at fixed key 0.
     ASSERT_EQUALS(1U, observer.countInsertsForIdent(handle.indexBuildIdent));
@@ -1316,8 +1315,8 @@ TEST_F(MultiIndexBlockTest, PersistResumeStateOverwritesPriorState) {
     auto handle =
         setUpKReplicatePrimaryDrivenBuild(operationContext(), indexer, autoColl, coll, getNSS());
 
-    indexer->persistResumeState(operationContext(), coll.get(), /*isResumable=*/true);
-    indexer->persistResumeState(operationContext(), coll.get(), /*isResumable=*/true);
+    indexer->persistResumeState(operationContext(), coll.get());
+    indexer->persistResumeState(operationContext(), coll.get());
 
     // The first write inserts at key 0; the second sees an existing key and updates in place.
     ASSERT_EQUALS(1U, observer.countInsertsForIdent(handle.indexBuildIdent));
@@ -1361,7 +1360,7 @@ TEST_F(MultiIndexBlockTest, AbortWithoutCleanupUsesContainerWrites) {
     auto handle =
         setUpKReplicatePrimaryDrivenBuild(operationContext(), indexer, autoColl, coll, getNSS());
 
-    indexer->abortWithoutCleanup(operationContext(), coll.get(), /*isResumable=*/true);
+    indexer->abortWithoutCleanup(operationContext(), coll.get());
 
     ASSERT_EQUALS(1U, observer.countInsertsForIdent(handle.indexBuildIdent));
 
@@ -1395,8 +1394,9 @@ TEST_F(MultiIndexBlockTest, PersistResumeStateNoOpWhenNotResumable) {
 
     auto handle =
         setUpKReplicatePrimaryDrivenBuild(operationContext(), indexer, autoColl, coll, getNSS());
+    indexer->setIsResumable(false);
 
-    indexer->persistResumeState(operationContext(), coll.get(), /*isResumable=*/false);
+    indexer->persistResumeState(operationContext(), coll.get());
 
     ASSERT_EQUALS(0U, observer.countInsertsForIdent(handle.indexBuildIdent));
     ASSERT_FALSE(readReplicatedResumeState(operationContext(), handle.buildUUID));
@@ -1418,6 +1418,7 @@ TEST_F(MultiIndexBlockTest, HybridBuildDoesNotUseContainerWrites) {
     auto indexer = getIndexer();
     const auto buildUUID = UUID::gen();
     indexer->setBuildUUID(buildUUID);
+    indexer->setIsResumable(true);
     // No setContainerWriteBehavior — defaults to kDoNotReplicate (hybrid).
 
     AutoGetCollection autoColl(operationContext(), getNSS(), MODE_X);
@@ -1438,7 +1439,7 @@ TEST_F(MultiIndexBlockTest, HybridBuildDoesNotUseContainerWrites) {
                             MultiIndexBlock::InitMode::SteadyState,
                             boost::none));
 
-    indexer->persistResumeState(operationContext(), coll.get(), /*isResumable=*/true);
+    indexer->persistResumeState(operationContext(), coll.get());
 
     // Hybrid builds use the regular RecordStore path, so the OpObserver sees no container ops.
     ASSERT_EQUALS(0U, observer.intInserts.size());

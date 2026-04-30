@@ -302,9 +302,7 @@ public:
      * To persist the resume state prior to a clean shutdown, abortWithoutCleanup(..) should be
      * used, which will ensure the temporary tables will not be dropped.
      */
-    void persistResumeState(OperationContext* opCtx,
-                            const CollectionPtr& collection,
-                            bool isResumable);
+    void persistResumeState(OperationContext* opCtx, const CollectionPtr& collection);
 
     /**
      * May be called at any time after construction but before a successful commit(). Suppresses
@@ -316,9 +314,7 @@ public:
      * abortWithoutCleanup(..) on shutdown even if the resume state has already been persisted with
      * persistResumeState(..).
      */
-    void abortWithoutCleanup(OperationContext* opCtx,
-                             const CollectionPtr& collection,
-                             bool isResumable);
+    void abortWithoutCleanup(OperationContext* opCtx, const CollectionPtr& collection);
 
     /**
      * Marks this build as cleaned up. Used during teardown when no actual table cleanup is needed.

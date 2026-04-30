@@ -191,8 +191,12 @@ public:
      */
     bool abortIndexBuildWithoutCleanup(OperationContext* opCtx,
                                        const CollectionPtr& collection,
-                                       const UUID& buildUUID,
-                                       bool isResumable);
+                                       const UUID& buildUUID);
+
+    /**
+     * Updates the resumability flag on an active builder.
+     */
+    void setIsResumable(const UUID& buildUUID, bool isResumable);
 
     /**
      * Returns true if the index build supports background writes while building an index. This is

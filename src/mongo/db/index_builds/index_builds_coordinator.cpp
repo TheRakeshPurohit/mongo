@@ -1872,8 +1872,7 @@ void IndexBuildsCoordinator::_completeExternalAbort(OperationContext* opCtx,
         // No locks are required when aborting due to rollback. This performs no storage engine
         // writes, only cleans up the remaining in-memory state.
         CollectionWriter coll(opCtx, replState->collectionUUID);
-        _indexBuildsManager.abortIndexBuildWithoutCleanup(
-            opCtx, coll.get(), replState->buildUUID, replState->isResumable());
+        _indexBuildsManager.abortIndexBuildWithoutCleanup(opCtx, coll.get(), replState->buildUUID);
     }
 
     replState->completeAbort(opCtx);
@@ -1901,7 +1900,7 @@ void IndexBuildsCoordinator::_completeAbortForShutdown(
         try {
             // Leave it as-if kill -9 happened. Startup recovery will restart the index build.
             _indexBuildsManager.abortIndexBuildWithoutCleanup(
-                opCtx, collection, replState->buildUUID, replState->isResumable());
+                opCtx, collection, replState->buildUUID);
 
             replState->abortForShutdown(opCtx);
             activeIndexBuilds.unregisterIndexBuild(
@@ -2953,6 +2952,11 @@ IndexBuildsCoordinator::PostSetupAction IndexBuildsCoordinator::_setUpIndexBuild
             auto lastOpTimeBeforeInterceptors =
                 indexBuildOptions.startIndexBuildOpTime.value_or(getLatestOplogOpTime(opCtx));
             replState->setLastOpTimeBeforeInterceptors(lastOpTimeBeforeInterceptors);
+
+            // The hybrid build only becomes resumable once _lastOpTimeBeforeInterceptors is set.
+            // setUpIndexBuild ran before this and so set the builder's _isResumable to false;
+            // refresh it now so a later persistResumeState / abortWithoutCleanup will write state.
+            _indexBuildsManager.setIsResumable(replState->buildUUID, true);
         }
     } catch (DBException& ex) {
         // It is fine to let the build continue even if we are interrupted, interrupt check before

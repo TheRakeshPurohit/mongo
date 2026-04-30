@@ -53,7 +53,6 @@
 #include "mongo/db/query/plan_yield_policy.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/server_feature_flags_gen.h"
-#include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/shard_role/lock_manager/d_concurrency.h"
 #include "mongo/db/shard_role/lock_manager/exception_util.h"
@@ -1467,21 +1466,15 @@ void MultiIndexBlock::appendBuildInfo(BSONObjBuilder* builder) const {
     builder->append("phaseStr", idl::serialize(_phase));
 }
 
-void MultiIndexBlock::persistResumeState(OperationContext* opCtx,
-                                         const CollectionPtr& collection,
-                                         bool isResumable) {
-    const bool useContainerWrite = _containerWriteBehavior == ContainerWriteBehavior::kReplicate &&
-        feature_flags::gResumablePrimaryDrivenIndexBuilds.isEnabledUseLastLTSFCVWhenUninitialized(
-            VersionContext::getDecoration(opCtx),
-            serverGlobalParams.featureCompatibility.acquireFCVSnapshot());
-    if (!isResumable || (_method != IndexBuildMethodEnum::kHybrid && !useContainerWrite)) {
+void MultiIndexBlock::persistResumeState(OperationContext* opCtx, const CollectionPtr& collection) {
+    if (!_isResumable) {
         return;
     }
 
     invariant(!_buildIsCleanedUp);
     invariant(_buildUUID);
 
-    if (useContainerWrite) {
+    if (_containerWriteBehavior == ContainerWriteBehavior::kReplicate) {
         _writeStateToContainer(opCtx);
     } else {
         _writeStateToDisk(opCtx);
@@ -1489,15 +1482,10 @@ void MultiIndexBlock::persistResumeState(OperationContext* opCtx,
 }
 
 void MultiIndexBlock::abortWithoutCleanup(OperationContext* opCtx,
-                                          const CollectionPtr& collection,
-                                          bool isResumable) {
+                                          const CollectionPtr& collection) {
     invariant(!_buildIsCleanedUp);
-    const bool useContainerWrite = _containerWriteBehavior == ContainerWriteBehavior::kReplicate &&
-        feature_flags::gResumablePrimaryDrivenIndexBuilds.isEnabledUseLastLTSFCVWhenUninitialized(
-            VersionContext::getDecoration(opCtx),
-            serverGlobalParams.featureCompatibility.acquireFCVSnapshot());
 
-    if (isResumable && (_method == IndexBuildMethodEnum::kHybrid || useContainerWrite)) {
+    if (_isResumable) {
         invariant(_buildUUID && collection);
         // Aborting without cleanup is done during shutdown. At this point the operation context is
         // killed, but acquiring locks must succeed.
@@ -1516,7 +1504,7 @@ void MultiIndexBlock::abortWithoutCleanup(OperationContext* opCtx,
             index.block->createDeferredTables(opCtx);
         }
 
-        if (useContainerWrite) {
+        if (_containerWriteBehavior == ContainerWriteBehavior::kReplicate) {
             _writeStateToContainer(opCtx);
         } else {
             _writeStateToDisk(opCtx);
