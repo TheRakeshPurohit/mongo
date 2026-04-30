@@ -403,14 +403,14 @@ boost::optional<BSONObj> decompressBucket(const BSONObj& bucketDoc) try {
                         // This bucket isn't compressed.
                         return boost::none;
                     }
-                    builder.append(kBucketControlVersionFieldName,
-                                   kTimeseriesControlUncompressedVersion);
+                    controlBuilder.append(kBucketControlVersionFieldName,
+                                          kTimeseriesControlUncompressedVersion);
                 } else if (e.fieldNameStringData() == kBucketControlCountFieldName) {
                     // Omit the count field when decompressing.
                     continue;
                 } else {
                     // Just copy all the other fields.
-                    builder.append(e);
+                    controlBuilder.append(e);
                 }
             }
         } else if (topLevel.fieldNameStringData() == kBucketDataFieldName) {
@@ -429,7 +429,7 @@ boost::optional<BSONObj> decompressBucket(const BSONObj& bucketDoc) try {
                 DecimalCounter<uint32_t> count{0};
                 for (auto&& measurement : column) {
                     if (!measurement.eoo()) {
-                        builder.appendAs(measurement, count);
+                        dataBuilder.appendAs(measurement, count);
                     }
                     ++count;
                 }

@@ -325,10 +325,10 @@ ResolvedNamespace ResolvedNamespace::fromBSON(const BSONObj& commandResponseObj)
                              options};
 }
 
-void TimeseriesViewMetadata::serialize(BSONObjBuilder* optionsBuilder,
-                                       BSONObjBuilder* subObjBuilder) const {
+void TimeseriesViewMetadata::serialize(BSONObjBuilder* subObjBuilder) const {
     if (options) {
-        BSONObjBuilder tsObj(optionsBuilder->subobjStart(kTimeseriesOptions));
+        // TODO(SERVER-125735): Evaluate if the structure of the BSON needs to be fixed
+        BSONObjBuilder tsObj(subObjBuilder->subobjStart(kTimeseriesOptions));
         options->serialize(&tsObj);
     }
     // Only serialize if it doesn't contain mixed data.
@@ -351,7 +351,7 @@ void ResolvedNamespace::serialize(BSONObjBuilder* builder) const {
     }
     subObj.append("pipeline", pipeline);
     if (_timeseriesMetadata.has_value()) {
-        _timeseriesMetadata->serialize(builder, &subObj);
+        _timeseriesMetadata->serialize(&subObj);
     }
 
     if (!_defaultCollation.isEmpty()) {

@@ -188,7 +188,7 @@ BSONObj PushNode::operatorValue(const SerializationOptions& opts) const {
             BSONArrayBuilder valueArrayBuilder;
             for (const auto& value : _valuesToPush)
                 valueArrayBuilder << value;
-            bob << "$each" << opts.serializeLiteral(valueArrayBuilder.arr());
+            subBuilder << "$each" << opts.serializeLiteral(valueArrayBuilder.arr());
         }
 
         if (_slice)

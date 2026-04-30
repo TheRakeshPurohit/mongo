@@ -54,7 +54,7 @@ struct MONGO_MOD_PUBLIC TimeseriesViewMetadata {
     static constexpr StringData kTimeseriesUsesExtendedRange = "timeseriesUsesExtendedRange"_sd;
     static constexpr StringData kTimeseriesfixedBuckets = "timeseriesfixedBuckets"_sd;
 
-    void serialize(BSONObjBuilder* optionsBuilder, BSONObjBuilder* subObjBuilder) const;
+    void serialize(BSONObjBuilder* subObjBuilder) const;
 };
 
 // Forward declare LiteParsedPipeline/LiteParserOptions. The cpp implementation will need to rely on

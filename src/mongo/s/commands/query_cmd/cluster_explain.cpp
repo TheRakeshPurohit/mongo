@@ -355,69 +355,67 @@ void ClusterExplain::buildExecStats(const vector<AsyncRequestsSender::Response>&
     executionStatsBob.appendNumber("totalDocsExamined", docsExamined);
 
     // Fill in the tree of stages.
-    BSONObjBuilder executionStagesBob(executionStatsBob.subobjStart("executionStages"));
+    {
+        BSONObjBuilder executionStagesBob(executionStatsBob.subobjStart("executionStages"));
 
-    // Info for the root mongos stage.
-    executionStagesBob.append("stage", mongosStageName);
-    executionStatsBob.appendNumber("nReturned", finalNReturned);
-    if (appendNCounted) {
-        executionStatsBob.appendNumber("nCounted", totalNCounted);
-    }
-    if (multipleShards) {
-        if (limit) {
-            executionStatsBob.appendNumber("limitAmount", static_cast<long long>(*limit));
+        // Info for the root mongos stage.
+        executionStagesBob.append("stage", mongosStageName);
+        executionStagesBob.appendNumber("nReturned", finalNReturned);
+        if (appendNCounted) {
+            executionStagesBob.appendNumber("nCounted", totalNCounted);
         }
-        if (skip) {
-            executionStatsBob.appendNumber("skipAmount", static_cast<long long>(*skip));
+        if (multipleShards) {
+            if (limit) {
+                executionStagesBob.appendNumber("limitAmount", static_cast<long long>(*limit));
+            }
+            if (skip) {
+                executionStagesBob.appendNumber("skipAmount", static_cast<long long>(*skip));
+            }
+        }
+        executionStagesBob.appendNumber("executionTimeMillis", millisElapsed);
+        executionStagesBob.appendNumber("totalKeysExamined", keysExamined);
+        executionStagesBob.appendNumber("totalDocsExamined", docsExamined);
+        executionStagesBob.append("totalChildMillis", totalChildMillis);
+
+        {
+            BSONArrayBuilder execShardsBuilder(executionStagesBob.subarrayStart("shards"));
+            for (size_t i = 0; i < shardResponses.size(); i++) {
+                auto responseData = shardResponses[i].swResponse.getValue().data;
+
+                BSONObjBuilder singleShardBob(execShardsBuilder.subobjStart());
+                BSONObj execStats = responseData["executionStats"].Obj();
+
+                singleShardBob.append("shardName", shardResponses[i].shardId.toString());
+                appendElementsIfRoom(&singleShardBob, execStats);
+                singleShardBob.doneFast();
+            }
+
+            if (!firstShardResponseData["executionStats"].Obj().hasField("allPlansExecution")) {
+                // The shards don't have execution stats for all plans, so we're done.
+                return;
+            }
         }
     }
-    executionStatsBob.appendNumber("executionTimeMillis", millisElapsed);
-    executionStatsBob.appendNumber("totalKeysExamined", keysExamined);
-    executionStatsBob.appendNumber("totalDocsExamined", docsExamined);
-    executionStagesBob.append("totalChildMillis", totalChildMillis);
 
-    BSONArrayBuilder execShardsBuilder(executionStagesBob.subarrayStart("shards"));
-    for (size_t i = 0; i < shardResponses.size(); i++) {
-        auto responseData = shardResponses[i].swResponse.getValue().data;
+    {
+        // Add the allPlans stats from each shard.
+        BSONArrayBuilder allPlansExecBob(executionStatsBob.subarrayStart("allPlansExecution"));
+        for (size_t i = 0; i < shardResponses.size(); i++) {
+            auto responseData = shardResponses[i].swResponse.getValue().data;
 
-        BSONObjBuilder singleShardBob(execShardsBuilder.subobjStart());
-        BSONObj execStats = responseData["executionStats"].Obj();
+            BSONObjBuilder singleShardBob(allPlansExecBob.subobjStart());
+            singleShardBob.append("shardName", shardResponses[i].shardId.toString());
 
-        singleShardBob.append("shardName", shardResponses[i].shardId.toString());
-        appendElementsIfRoom(&singleShardBob, execStats);
-        singleShardBob.doneFast();
-    }
+            BSONObj execStats = responseData["executionStats"].Obj();
+            vector<BSONElement> allPlans = execStats["allPlansExecution"].Array();
 
-    execShardsBuilder.doneFast();
-    executionStagesBob.doneFast();
-    if (!firstShardResponseData["executionStats"].Obj().hasField("allPlansExecution")) {
-        // The shards don't have execution stats for all plans, so we're done.
-        executionStatsBob.doneFast();
-        return;
-    }
-
-    // Add the allPlans stats from each shard.
-    BSONArrayBuilder allPlansExecBob(executionStatsBob.subarrayStart("allPlansExecution"));
-    for (size_t i = 0; i < shardResponses.size(); i++) {
-        auto responseData = shardResponses[i].swResponse.getValue().data;
-
-        BSONObjBuilder singleShardBob(allPlansExecBob.subobjStart());
-        singleShardBob.append("shardName", shardResponses[i].shardId.toString());
-
-        BSONObj execStats = responseData["executionStats"].Obj();
-        vector<BSONElement> allPlans = execStats["allPlansExecution"].Array();
-
-        BSONArrayBuilder innerArrayBob(singleShardBob.subarrayStart("allPlans"));
-        for (size_t j = 0; j < allPlans.size(); j++) {
-            appendToArrayIfRoom(&innerArrayBob, allPlans[j]);
+            BSONArrayBuilder innerArrayBob(singleShardBob.subarrayStart("allPlans"));
+            for (size_t j = 0; j < allPlans.size(); j++) {
+                appendToArrayIfRoom(&innerArrayBob, allPlans[j]);
+            }
+            innerArrayBob.done();
         }
-        innerArrayBob.done();
-
-        singleShardBob.doneFast();
     }
-
-    allPlansExecBob.doneFast();
-    executionStatsBob.doneFast();
 }
 
 // static

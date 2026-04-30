@@ -384,7 +384,7 @@ public:
 
         {
             BSONObjBuilder sub(builder.subobjStart("tcmalloc_derived"));
-            _metrics.appendCustomDerivedMetrics(builder);
+            _metrics.appendCustomDerivedMetrics(sub);
 
             static constexpr std::array totalFreeBytesParts{
                 "tcmalloc.pageheap_free_bytes"_sd,
