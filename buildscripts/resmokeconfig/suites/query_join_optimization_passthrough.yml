@@ -39,8 +39,6 @@ selector:
     - jstests/sharding/query/sbe_plan_cache_does_not_block_range_deletion.js
     # Requires external sort
     - jstests/core/query/sort/sortg.js
-    # TODO SERVER-114737 Timeseries not supported by Join Optimization
-    - jstests/core/timeseries/**/*.js
     # TODO SERVER-114739 Join optimization: collation disregarded when joining
     - jstests/sharding/query/collation/collation_lookup.js
     # TODO SERVER-118416 Fix join reordering tripwire assertions for lookup+unwind pipelines and re-enable lookup_unwind_pbt PBT

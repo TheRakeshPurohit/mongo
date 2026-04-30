@@ -119,10 +119,20 @@ EnumerationStrategy getEnumerationStrategy(const QueryKnobConfiguration& qkc) {
             .enableHJOrderPruning = qkc.getEnableJoinEnumerationHJOrderPruning()};
 }
 
-bool anySecondaryNamespacesDontExist(const MultipleCollectionAccessor& mca) {
-    auto colls = mca.getSecondaryCollectionAcquisitions();
-    return std::any_of(
-        colls.begin(), colls.end(), [](auto&& it) { return !it.second.collectionExists(); });
+bool isCollPtrEligibleForJoinOpt(const CollectionPtr& cptr) {
+    return !cptr->isCapped() && !cptr->isClustered() &&
+        CollatorInterface::isSimpleCollator(cptr->getDefaultCollator());
+}
+
+bool isCollectionEligibleForJoinOpt(const CollectionAcquisition& coll) {
+    return coll.exists() && !coll.getShardingDescription().isSharded() &&
+        isCollPtrEligibleForJoinOpt(coll.getCollectionPtr());
+}
+
+bool isCollectionOrViewEligibleForJoinOpt(const CollectionOrViewAcquisition& coll) {
+    // TODO SERVER-112239: permit foreign collection views/ resolve them.
+    // Note: timeseries views should automatically be excluded if they are resolved.
+    return coll.isCollection() && isCollectionEligibleForJoinOpt(coll.getCollection());
 }
 
 bool isAggEligibleForJoinReordering(const MultipleCollectionAccessor& mca,
@@ -142,24 +152,18 @@ bool isAggEligibleForJoinReordering(const MultipleCollectionAccessor& mca,
         return false;
     }
 
-    if (mca.getMainCollectionAcquisition().getShardingDescription().isSharded()) {
-        // We don't permit a sharded base collection.
+    // Ensure that the base collection is eligible. If not, this aggregation can't participate in
+    // join optimization.
+    if (!isCollectionEligibleForJoinOpt(mca.getMainCollectionAcquisition())) {
         return false;
     }
 
-    // Check that no foreign collection is sharded.
+    // Check that all foreign collections are eligible.
+    // TODO SERVER-125401: instead of falling back, shorten the prefix.
     for (const auto& [_, collAcq] : mca.getSecondaryCollectionAcquisitions()) {
-        if (collAcq.collectionExists() &&
-            collAcq.getCollection().getShardingDescription().isSharded()) {
-            // We don't permit sharded foreign collections.
+        if (!isCollectionOrViewEligibleForJoinOpt(collAcq)) {
             return false;
         }
-    }
-
-    if (mca.isAnySecondaryNamespaceAViewOrNotFullyLocal() || anySecondaryNamespacesDontExist(mca)) {
-        // TODO SERVER-112239: Enable support for views, as the above check will prevent views from
-        // being used for join ordering.
-        return false;
     }
 
     // Fallback on cross-DB lookups.
