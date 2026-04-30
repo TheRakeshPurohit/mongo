@@ -252,3 +252,8 @@ export function getTimeSeriesIndexModel({allowPartialIndexes = false, allowColla
         return !isMultikey(def);
     });
 }
+
+export function getIndexesModel({isTS = false, minNumIndexes = 0, maxNumIndexes = 15} = {}) {
+    const indexModel = isTS ? getTimeSeriesIndexModel() : getIndexModel();
+    return fc.array(indexModel, {minLength: minNumIndexes, maxLength: maxNumIndexes, size: "+2"});
+}

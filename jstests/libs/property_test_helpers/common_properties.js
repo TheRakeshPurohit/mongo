@@ -140,6 +140,76 @@ export function createCacheCorrectnessProperty(controlColl, experimentColl, stat
 }
 
 /*
+ * Caches a plan for each query shape, replaces all documents in the control and experiment
+ * collections with a second set of documents, enables the `planCacheAlwaysReplanClassic` and
+ * `planCacheAlwaysReplanSBE` failpoints, then reruns each cached query shape once and compares
+ * the results to a collection scan. This targets the replanning path where the
+ * cached plan was chosen for one dataset but now has to run against a different one, with a
+ * potentially different winning plan.
+ */
+export function createReplanningCacheCorrectnessProperty(controlColl, experimentColl) {
+    return function replannedQueriesHaveSameResultsAsControl(getQuery, testHelpers, {extraDocs}) {
+        // The query shapes we'll use to populate the plan cache.
+        const cachingQueries = [];
+        // A different variation (different constants) of each shape that we'll rerun after
+        // replacing the documents.
+        const replanQueries = [];
+        for (let shapeIx = 0; shapeIx < testHelpers.numQueryShapes; shapeIx++) {
+            cachingQueries.push(getQuery(shapeIx, 0 /* paramIx */));
+            replanQueries.push(getQuery(shapeIx, 1 /* paramIx */));
+        }
+
+        // Run each query shape three times against the initial docs to populate the plan cache.
+        cachingQueries.forEach((query) => {
+            for (let i = 0; i < 3; i++) {
+                experimentColl.aggregate(query.pipeline, query.options).toArray();
+            }
+        });
+
+        // Replace all documents in both collections with the second set. Writes do not invalidate
+        // existing plan cache entries, so the cached plans from the previous phase remain.
+        assert.commandWorked(controlColl.deleteMany({}));
+        assert.commandWorked(experimentColl.deleteMany({}));
+        assert.commandWorked(controlColl.insert(extraDocs));
+        assert.commandWorked(experimentColl.insert(extraDocs));
+
+        function runReplannedQueries() {
+            const resultMap = runDeoptimized(controlColl, replanQueries);
+
+            for (let i = 0; i < replanQueries.length; i++) {
+                const query = replanQueries[i];
+                const controlResults = resultMap[i];
+                const experimentResults = experimentColl.aggregate(query.pipeline, query.options).toArray();
+
+                if (!testHelpers.comp(controlResults, experimentResults)) {
+                    return {
+                        passed: false,
+                        message: "A cached query that was forced to replan returned incorrect results.",
+                        query,
+                        explain: experimentColl.explain().aggregate(query.pipeline, query.options),
+                        controlResults,
+                        experimentResults,
+                    };
+                }
+            }
+            return {passed: true};
+        }
+
+        // Force every execution of a cached plan to trigger replanning.
+        return runWithKnobs(
+            experimentColl.getDB(),
+            runReplannedQueries,
+            // No knobs need to be set here, just failpoints.
+            {} /* knobToVal */,
+            {
+                planCacheAlwaysReplanClassic: "alwaysOn",
+                planCacheAlwaysReplanSBE: "alwaysOn",
+            },
+        );
+    };
+}
+
+/*
  * Asserts that `costEstimate` and `cardinalityEstimate` are defined in every stage of every plan
  * in the explain.
  */
@@ -208,39 +278,62 @@ export function createPlanStabilityProperty(experimentColl, assertCeExists = fal
     };
 }
 
-function runSetParamCommand(db, cmd) {
-    FixtureHelpers.runCommandOnAllShards({db: db.getSiblingDB("admin"), cmdObj: cmd});
+function runSetParamCommand(adminDb, knobToVal) {
+    FixtureHelpers.runCommandOnAllShards({db: adminDb, cmdObj: {setParameter: 1, ...knobToVal}});
+}
+
+function runSetFailpointCommand(adminDb, fpName, fpMode) {
+    FixtureHelpers.runCommandOnAllShards({
+        db: adminDb,
+        cmdObj: {configureFailPoint: fpName, mode: fpMode},
+    });
 }
 
 /*
- * Runs the given function with the query knobs set, then sets the query knobs back to their
- * original state.
+ * Runs the given function with the query knobs and/or failpoints set, then sets the values
+ * back to their original state before exiting.
  * It's important that each run of the property is independent from one another, so we'll always
  * reset the knobs to their original state even if the function throws an exception.
  */
-function runWithKnobs(db, knobToVal, fn) {
+function runWithKnobs(db, fn, knobToVal = {}, failPointToMode = {}) {
+    const adminDb = db.getSiblingDB("admin");
     const knobNames = Object.keys(knobToVal);
-    // If there are no knobs to change, return the result of the function since there's no other
-    // work to do.
-    if (knobNames.length === 0) {
+    const failPointNames = Object.keys(failPointToMode);
+    // If there are no knobs or failpoints to change, return the result of the function since
+    // there's no other work to do.
+    if (knobNames.length === 0 && failPointNames.length === 0) {
         return fn();
     }
 
     // Get the previous knob settings, so we can undo our changes after setting the knobs from
     // `knobToVal`.
-    const getParamObj = {getParameter: 1};
-    for (const key of knobNames) {
-        getParamObj[key] = 1;
-    }
-    const getParamResult = assert.commandWorked(db.adminCommand(getParamObj));
-    // Copy only the knob key/vals into the new object.
-    const priorSettings = {};
-    for (const key of knobNames) {
-        priorSettings[key] = getParamResult[key];
+    const priorKnobSettings = {};
+    if (knobNames.length > 0) {
+        const getParamObj = {getParameter: 1};
+        for (const key of knobNames) {
+            getParamObj[key] = 1;
+        }
+        const getParamResult = assert.commandWorked(adminDb.adminCommand(getParamObj));
+        for (const key of knobNames) {
+            priorKnobSettings[key] = getParamResult[key];
+        }
+
+        // Set the requested knobs.
+        runSetParamCommand(adminDb, knobToVal);
     }
 
-    // Set the requested knobs.
-    runSetParamCommand(db, {setParameter: 1, ...knobToVal});
+    // Capture the prior failpoint modes so we can restore them, then turn on the requested
+    // failpoints.
+    const priorFailPointModes = {};
+    for (const fpName of failPointNames) {
+        const paramName = `failpoint.${fpName}`;
+        const getParamResult = assert.commandWorked(adminDb.adminCommand({getParameter: 1, [paramName]: 1}));
+        // Mode is a 1 or 0 for on or off failpoint status.
+        const priorModeStr = getParamResult[paramName].mode ? "alwaysOn" : "off";
+        priorFailPointModes[fpName] = priorModeStr;
+
+        runSetFailpointCommand(adminDb, fpName, failPointToMode[fpName]);
+    }
 
     // With the finally block, we'll always revert the parameters back to their original settings,
     // even if an exception is thrown.
@@ -248,7 +341,12 @@ function runWithKnobs(db, knobToVal, fn) {
         return fn();
     } finally {
         // Reset to the original settings.
-        runSetParamCommand(db, {setParameter: 1, ...priorSettings});
+        if (knobNames.length > 0) {
+            runSetParamCommand(adminDb, priorKnobSettings);
+        }
+        for (const fpName of failPointNames) {
+            runSetFailpointCommand(adminDb, fpName, priorFailPointModes[fpName]);
+        }
     }
 }
 
@@ -259,7 +357,7 @@ export function createQueriesWithKnobsSetAreSameAsControlCollScanProperty(contro
         // Compute the control results all at once.
         const resultMap = runDeoptimized(controlColl, queries);
 
-        return runWithKnobs(experimentColl.getDB(), knobToVal, () => {
+        function compareResults() {
             for (let i = 0; i < queries.length; i++) {
                 const query = queries[i];
                 const controlResults = resultMap[i];
@@ -278,7 +376,9 @@ export function createQueriesWithKnobsSetAreSameAsControlCollScanProperty(contro
                 }
             }
             return {passed: true};
-        });
+        }
+
+        return runWithKnobs(experimentColl.getDB(), compareResults, knobToVal);
     };
 }
 
