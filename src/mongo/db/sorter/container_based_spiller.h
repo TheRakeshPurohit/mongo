@@ -69,16 +69,37 @@ public:
                       Iterator<Key, Value>::Settings settings,
                       const size_t checksum,
                       const SorterChecksumVersion checksumVersion)
+        : ContainerIterator(std::move(cursor),
+                            start,
+                            start,
+                            end,
+                            std::move(settings),
+                            checksum,
+                            0,
+                            checksumVersion) {}
+
+    /**
+     * Constructs an iterator using the given cursor, from `start` (inclusive) up to `end`
+     * (exclusive), currently positioned at `position`.
+     */
+    ContainerIterator(std::unique_ptr<IntegerKeyedContainer::Cursor> cursor,
+                      int64_t start,
+                      int64_t position,
+                      int64_t end,
+                      Iterator<Key, Value>::Settings settings,
+                      size_t checksum,
+                      size_t currentChecksum,
+                      SorterChecksumVersion checksumVersion)
         : _cursor(std::move(cursor)),
           _start(start),
-          _position(_unpositioned),
+          _position(position),
           _end(end),
           _settings(std::move(settings)),
-          _checksumCalculator(checksumVersion),
+          _checksumCalculator(checksumVersion, currentChecksum),
           _originalChecksum(checksum) {}
 
     bool more() override {
-        return _position < _end - 1;
+        return !_positioned || _position < _end - 1;
     }
 
     std::pair<Key, Value> next() override {
@@ -122,7 +143,7 @@ public:
 
     SorterRange getRange() const override {
         SorterRange range{_start, _end, static_cast<int64_t>(_originalChecksum)};
-        if (_position != _unpositioned) {
+        if (_positioned) {
             range.setCurrent(_position);
         }
         return range;
@@ -138,15 +159,13 @@ public:
     }
 
 private:
-    static constexpr int64_t _unpositioned = -1;
-
     std::span<const char> _next() {
-        if (_position == _unpositioned) {
-            auto result = _cursor->find(_start);
+        if (!_positioned) {
+            auto result = _cursor->find(_position);
             uassert(10896300,
                     fmt::format("Sorter container unexpectedly missing key {}", _position),
                     result);
-            _position = _start;
+            _positioned = true;
             return *result;
         }
 
@@ -175,6 +194,7 @@ private:
     int64_t _start;
     int64_t _position;
     int64_t _end;
+    bool _positioned = false;
     Iterator<Key, Value>::Settings _settings;
     boost::optional<std::span<const char>> _deferredValue;
 

@@ -167,6 +167,29 @@ TEST(ContainerIteratorTest, Iterate) {
     // After exhaustion, getRange() reports the last key consumed.
     ASSERT_TRUE(iterator.getRange().getCurrent().has_value());
     EXPECT_EQ(*iterator.getRange().getCurrent(), containerKey5);
+
+    // Construct an iterator starting at key 4.
+    ContainerIterator<IntWrapper, IntWrapper> positionedIterator{
+        container.getCursor(ru),
+        containerKey1,
+        containerKey4,
+        containerKey5 + 1,
+        Iterator<IntWrapper, IntWrapper>::Settings{},
+        /*checksum=*/3272515249,
+        /*currentChecksum=*/1727402339,
+        sorter::kLatestChecksumVersion};
+
+    ASSERT_TRUE(positionedIterator.more());
+    EXPECT_EQ(positionedIterator.nextWithDeferredValue(), key4);
+    EXPECT_EQ(positionedIterator.getDeferredValue(), value4);
+    ASSERT_TRUE(positionedIterator.getRange().getCurrent().has_value());
+    EXPECT_EQ(*positionedIterator.getRange().getCurrent(), containerKey4);
+
+    ASSERT_TRUE(positionedIterator.more());
+    EXPECT_EQ(positionedIterator.nextWithDeferredValue(), key5);
+    EXPECT_EQ(positionedIterator.getDeferredValue(), value5);
+    ASSERT_TRUE(positionedIterator.getRange().getCurrent().has_value());
+    EXPECT_EQ(*positionedIterator.getRange().getCurrent(), containerKey5);
 }
 
 TEST(ContainerIteratorTest, MultipleCursors) {
