@@ -38,7 +38,9 @@
 #include "mongo/db/storage/write_unit_of_work.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/debug_util.h"
 #include "mongo/util/log_and_backoff.h"
+#include "mongo/util/stacktrace.h"
 
 #include <utility>
 #include <variant>
@@ -98,13 +100,34 @@ void KVDropPendingIdentReaper::addDropPendingIdent(const StorageEngine::DropTime
                                                    std::shared_ptr<Ident> ident,
                                                    StorageEngine::DropIdentCallback&& onDrop) {
     std::lock_guard lock(_mutex);
-    invariant(!_dropPendingIdents.contains(ident->getIdent()), ident->getIdent());
-    if (auto ts = getTimestamp(dropTime)) {
-        invariant(!ts->isNull(), ident->getIdent());
+
+    // Debug instrumentation, BF-42904 was caused by duplicate drops of the same ident, in
+    // jstestfuzz tests.  These couldn't be reproduced reliably, and the logs do not capture the
+    // context of the first enqueued drop.  This check is intended to catch the first enqueue.
+    // TODO: Remove this once duplicate drop issue is resolved.
+    const auto& identName = ident->getIdent();
+    const bool alreadyPresent = _dropPendingIdents.contains(identName);
+    if constexpr (kDebugBuild) {
+        if (identName.find("internal-constraintViolations-") != std::string::npos) {
+            LOGV2_DEBUG(12644000,
+                        1,
+                        "Drop-pending ident enqueue",
+                        "ident"_attr = identName,
+                        "alreadyPresent"_attr = alreadyPresent);
+            // This is relatively expensive but only runs for this narrow class of idents, and only
+            // in debug builds to catch the issues in jstestfuzz.
+            printStackTrace();
+        }
     }
 
-    auto& info = _dropPendingIdents[ident->getIdent()];
-    info.identName = ident->getIdent();
+    invariant(!alreadyPresent, identName);
+
+    if (auto ts = getTimestamp(dropTime)) {
+        invariant(!ts->isNull(), identName);
+    }
+
+    auto& info = _dropPendingIdents[identName];
+    info.identName = identName;
     info.dropToken = ident;
     info.onDrop = onDrop;
     info.dropTime = dropTime;
