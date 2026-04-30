@@ -1215,26 +1215,6 @@ TEST_F(ReshardingDonorRecipientCommonTest, ProcessRecipientFieldsForCloningNoRef
                                RecipientFieldsValidator{});
 }
 
-TEST_F(ReshardingDonorRecipientCommonTest, ProcessDonorFieldsRefreshCreatesEvenWithInitNoRefresh) {
-    testProcessDonorFields(kThisShard.getShardId() /* shardThatChunkExistsOn*/,
-                           kOtherShard.getShardId() /* primaryShard */,
-                           boost::none /* performVerification */,
-                           true /* expectDonorStateMachine */,
-                           DonorFieldsValidator{});
-}
-
-TEST_F(ReshardingDonorRecipientCommonTest,
-       ProcessRecipientFieldsRefreshCreatesEvenWithInitNoRefresh) {
-    RAIIServerParameterControllerForTest initNoRefreshController(
-        "featureFlagReshardingInitNoRefresh", true);
-
-    testProcessRecipientFields(kThisShard.getShardId() /* shardThatChunkExistsOn*/,
-                               kThisShard.getShardId() /* primaryShard */,
-                               boost::none /* performVerification */,
-                               true /* expectRecipientStateMachine */,
-                               RecipientFieldsValidator{});
-}
-
 TEST_F(ReshardingDonorRecipientCommonTest,
        CreateReshardingStateMachine_PropagatesNotPrimaryWhenFlagTrue) {
     OperationContext* opCtx = operationContext();

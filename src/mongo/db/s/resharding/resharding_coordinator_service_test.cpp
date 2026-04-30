@@ -1079,10 +1079,15 @@ public:
             stateTransitionsGuard->unset(state);
 
             if (errorState && state == *errorState) {
-                waitUntilCommittedCoordinatorDocReach(opCtx, CoordinatorStateEnum::kAborting);
-
-                makeRecipientsProceedToDone(opCtx);
-                makeDonorsProceedToDone(opCtx);
+                // With featureFlagReshardingInitNoRefresh enabled, the abort path skips the
+                // observer wait and races kAborting -> kDone, so polling for kAborting and
+                // advancing participants would either spin or fail.
+                if (!resharding::gFeatureFlagReshardingInitNoRefresh
+                         .isEnabledAndIgnoreFCVUnsafe()) {
+                    waitUntilCommittedCoordinatorDocReach(opCtx, CoordinatorStateEnum::kAborting);
+                    makeRecipientsProceedToDone(opCtx);
+                    makeDonorsProceedToDone(opCtx);
+                }
 
                 ASSERT_EQ(coordinator->getCompletionFuture().getNoThrow(),
                           ErrorCodes::InternalError);
@@ -1380,13 +1385,6 @@ public:
         auto abortReason0 = resharding::kFCVChangeAbortReason;
         coordinator->abort({abortReason0, resharding::AbortType::kAbortWithQuiesce});
 
-        waitUntilCommittedCoordinatorDocReach(opCtx, CoordinatorStateEnum::kAborting);
-
-        // Make donors and recipients transition to the "done" state. This is required to allow the
-        // coordinator to transition to the "quiesced" state.
-        makeDonorsProceedToDone(opCtx);
-        makeRecipientsProceedToDone(opCtx);
-
         // Wait for the coordinator to transition to the "quiesced" state.
         waitUntilCommittedCoordinatorDocReach(opCtx, CoordinatorStateEnum::kQuiesced);
 
@@ -1538,10 +1536,6 @@ TEST_F(ReshardingCoordinatorServiceCriticalSectionWithBlockingDeltaTest,
 
     stateTransitionsGuard.wait(CoordinatorStateEnum::kAborting);
     stateTransitionsGuard.unset(CoordinatorStateEnum::kAborting);
-    waitUntilCommittedCoordinatorDocReach(opCtx, CoordinatorStateEnum::kAborting);
-
-    makeRecipientsProceedToDone(opCtx);
-    makeDonorsProceedToDone(opCtx);
 
     ASSERT_THROWS_CODE(coordinator->getCompletionFuture().get(opCtx),
                        DBException,
@@ -1549,6 +1543,12 @@ TEST_F(ReshardingCoordinatorServiceCriticalSectionWithBlockingDeltaTest,
 }
 
 TEST_F(ReshardingCoordinatorServiceTest, ReshardingCoordinatorSuccessfullyTransitionsTokDone) {
+    runReshardingToCompletion();
+}
+
+TEST_F(ReshardingCoordinatorServiceTest, ReshardingCoordinatorSuccessfulWithRefresh) {
+    RAIIServerParameterControllerForTest noRefreshFeatureFlagController(
+        "featureFlagReshardingInitNoRefresh", false);
     runReshardingToCompletion();
 }
 
@@ -2004,10 +2004,6 @@ TEST_F(ReshardingCoordinatorServiceTest, CoordinatorReturnsErrorCode) {
 
     stateTransitionsGuard.wait(CoordinatorStateEnum::kAborting);
     stateTransitionsGuard.unset(CoordinatorStateEnum::kAborting);
-    waitUntilCommittedCoordinatorDocReach(opCtx, CoordinatorStateEnum::kAborting);
-
-    makeRecipientsProceedToDone(opCtx);
-    makeDonorsProceedToDone(opCtx);
 
     ASSERT_THROWS_CODE(coordinator->getCompletionFuture().get(opCtx),
                        DBException,
@@ -2045,11 +2041,9 @@ TEST_F(ReshardingCoordinatorServiceTest, CoordinatorReturnsErrorCodeAfterRestart
     makeRecipientsReturnErrorWithAssert(opCtx);
 
     stateTransitionsGuard.wait(CoordinatorStateEnum::kAborting);
-    stateTransitionsGuard.unset(CoordinatorStateEnum::kAborting);
-    waitUntilCommittedCoordinatorDocReach(opCtx, CoordinatorStateEnum::kAborting);
-
-
     stepDown(opCtx);
+    stateTransitionsGuard.unset(CoordinatorStateEnum::kAborting);
+
     ASSERT_THROWS_WITH_CHECK(
         coordinator->getCompletionFuture().get(), DBException, [&](const DBException& ex) {
             ASSERT_TRUE(ex.code() == ErrorCodes::CallbackCanceled ||
@@ -2058,9 +2052,6 @@ TEST_F(ReshardingCoordinatorServiceTest, CoordinatorReturnsErrorCodeAfterRestart
 
     coordinator.reset();
     stepUp(opCtx);
-
-    makeRecipientsProceedToDone(opCtx);
-    makeDonorsProceedToDone(opCtx);
 
     auto instanceId =
         BSON(ReshardingCoordinatorDocument::kReshardingUUIDFieldName << _reshardingUUID);
@@ -2160,10 +2151,6 @@ TEST_F(ReshardingCoordinatorServiceTest, CoordinatorHonorsCriticalSectionTimeout
 
     stateTransitionsGuard.wait(CoordinatorStateEnum::kAborting);
     stateTransitionsGuard.unset(CoordinatorStateEnum::kAborting);
-    waitUntilCommittedCoordinatorDocReach(opCtx, CoordinatorStateEnum::kAborting);
-
-    makeRecipientsProceedToDone(opCtx);
-    makeDonorsProceedToDone(opCtx);
 
     ASSERT_THROWS_CODE(coordinator->getCompletionFuture().get(opCtx),
                        DBException,
@@ -2204,19 +2191,21 @@ TEST_F(ReshardingCoordinatorServiceTest, ReshardingSendsCloneCmdNotRefresh) {
 }
 
 TEST_F(ReshardingCoordinatorServiceTest, CausalityBarrierSkippedOnInitialRun) {
-    RAIIServerParameterControllerForTest noRefreshFeatureFlagController(
-        "featureFlagReshardingInitNoRefresh", true);
-
     runReshardingToCompletion();
     ASSERT_EQ(externalState()->getCausalityBarrierInvokeCount(), 0);
 }
 
 TEST_F(ReshardingCoordinatorServiceTest, CausalityBarrierInvokedOnRecovery) {
-    RAIIServerParameterControllerForTest noRefreshFeatureFlagController(
-        "featureFlagReshardingInitNoRefresh", true);
-
     runReshardingToCompletionWithFailoverAt(CoordinatorStateEnum::kPreparingToDonate);
     ASSERT_EQ(externalState()->getCausalityBarrierInvokeCount(), 1);
+}
+
+TEST_F(ReshardingCoordinatorServiceTest, CausalityBarrierSkippedOnRecoveryWithoutFeatureFlag) {
+    RAIIServerParameterControllerForTest noRefreshFeatureFlagController(
+        "featureFlagReshardingInitNoRefresh", false);
+
+    runReshardingToCompletionWithFailoverAt(CoordinatorStateEnum::kPreparingToDonate);
+    ASSERT_EQ(externalState()->getCausalityBarrierInvokeCount(), 0);
 }
 
 class ReshardingCoordinatorServiceFailCloningVerificationTest
@@ -2264,10 +2253,6 @@ TEST_F(ReshardingCoordinatorServiceFailCloningVerificationTest, AbortIfPerformVe
 
     stateTransitionsGuard.wait(CoordinatorStateEnum::kAborting);
     stateTransitionsGuard.unset(CoordinatorStateEnum::kAborting);
-    waitUntilCommittedCoordinatorDocReach(opCtx, CoordinatorStateEnum::kAborting);
-
-    makeRecipientsProceedToDone(opCtx);
-    makeDonorsProceedToDone(opCtx);
 
     ASSERT_THROWS_CODE(
         coordinator->getCompletionFuture().get(opCtx), DBException, verifyClonedErrorCode);
@@ -2345,10 +2330,6 @@ TEST_F(ReshardingCoordinatorServiceFailFinalVerificationTest, AbortIfPerformVeri
 
     stateTransitionsGuard.wait(CoordinatorStateEnum::kAborting);
     stateTransitionsGuard.unset(CoordinatorStateEnum::kAborting);
-    waitUntilCommittedCoordinatorDocReach(opCtx, CoordinatorStateEnum::kAborting);
-
-    makeRecipientsProceedToDone(opCtx);
-    makeDonorsProceedToDone(opCtx);
 
     ASSERT_THROWS_CODE(
         coordinator->getCompletionFuture().get(opCtx), DBException, verifyFinalErrorCode);
@@ -2416,9 +2397,42 @@ TEST_F(ReshardingCoordinatorServiceTest,
         transitionFunctions, nullptr /* stateTransitionsGuard */, states, reshardingOptions);
 }
 
-TEST_F(ReshardingCoordinatorServiceTest, UnrecoverableErrorDuringPreparingToDonate) {
+TEST_F(ReshardingCoordinatorServiceTest, ReshardingSendsDonorInitCmd) {
+    // Force the legacy refresh path to throw. Successful resharding completion
+    // confirms that the new init-cmd path was used instead.
+    externalState()->throwUnrecoverableErrorIn(CoordinatorStateEnum::kPreparingToDonate,
+                                               kEstablishAllDonorsAsParticipants);
+
+    runReshardingToCompletion();
+}
+
+TEST_F(ReshardingCoordinatorServiceTest, ReshardingSendsRecipientInitCmd) {
+    // Force the legacy refresh path to throw. Successful resharding completion
+    // confirms that the new init-cmd path was used instead.
+    externalState()->throwUnrecoverableErrorIn(CoordinatorStateEnum::kPreparingToDonate,
+                                               kEstablishAllRecipientsAsParticipants);
+
+    runReshardingToCompletion();
+}
+
+TEST_F(ReshardingCoordinatorServiceTest,
+       UnrecoverableErrorWhileEstablishingDonorsDuringPreparingToDonate) {
+    // Force the legacy path so establishAllDonorsAsParticipants is called.
+    RAIIServerParameterControllerForTest noRefreshFeatureFlagController(
+        "featureFlagReshardingInitNoRefresh", false);
+
     runReshardingWithUnrecoverableError(CoordinatorStateEnum::kPreparingToDonate,
                                         kEstablishAllDonorsAsParticipants);
+}
+
+TEST_F(ReshardingCoordinatorServiceTest,
+       UnrecoverableErrorWhileEstablishingRecipientsDuringPreparingToDonate) {
+    // Force the legacy path so kEstablishAllRecipientsAsParticipants is called.
+    RAIIServerParameterControllerForTest noRefreshFeatureFlagController(
+        "featureFlagReshardingInitNoRefresh", false);
+
+    runReshardingWithUnrecoverableError(CoordinatorStateEnum::kPreparingToDonate,
+                                        kEstablishAllRecipientsAsParticipants);
 }
 
 TEST_F(ReshardingCoordinatorServiceTest, UnrecoverableErrorDuringCloning) {
@@ -2467,10 +2481,6 @@ TEST_F(ReshardingCoordinatorServiceTest, UnrecoverableErrorInDeltaCollectorDurin
 
     stateTransitionsGuard.wait(CoordinatorStateEnum::kAborting);
     stateTransitionsGuard.unset(CoordinatorStateEnum::kAborting);
-    waitUntilCommittedCoordinatorDocReach(opCtx, CoordinatorStateEnum::kAborting);
-
-    makeRecipientsProceedToDone(opCtx);
-    makeDonorsProceedToDone(opCtx);
 
     ASSERT_EQ(coordinator->getCompletionFuture().getNoThrow(), ErrorCodes::InternalError);
     checkCoordinatorDocumentRemoved(opCtx);
@@ -2519,10 +2529,6 @@ TEST_F(ReshardingCoordinatorServiceFailGetDocumentsToCopy, AbortIfPerformVerific
 
     stateTransitionsGuard.wait(CoordinatorStateEnum::kAborting);
     stateTransitionsGuard.unset(CoordinatorStateEnum::kAborting);
-    waitUntilCommittedCoordinatorDocReach(opCtx, CoordinatorStateEnum::kAborting);
-
-    makeRecipientsProceedToDone(opCtx);
-    makeDonorsProceedToDone(opCtx);
 
     ASSERT_THROWS_CODE(
         coordinator->getCompletionFuture().get(opCtx), DBException, getDocumentsToCopyErrorCode);
@@ -2655,10 +2661,6 @@ TEST_F(ReshardingCoordinatorServiceFailGetDocumentsDelta, AbortIfPerformVerifica
 
     stateTransitionsGuard.wait(CoordinatorStateEnum::kAborting);
     stateTransitionsGuard.unset(CoordinatorStateEnum::kAborting);
-    waitUntilCommittedCoordinatorDocReach(opCtx, CoordinatorStateEnum::kAborting);
-
-    makeRecipientsProceedToDone(opCtx);
-    makeDonorsProceedToDone(opCtx);
 
     ASSERT_THROWS_CODE(
         coordinator->getCompletionFuture().get(opCtx), DBException, getDocumentsDeltaErrorCode);
@@ -2892,17 +2894,6 @@ TEST_F(ReshardingCoordinatorServiceTest, TransientErrorAfterCoordinatorDocRemove
     ASSERT_OK(coordinator->getCompletionFuture().getNoThrow());
 }
 
-TEST_F(ReshardingCoordinatorServiceTest, FeatureFlagReshardingInitNoRefreshSendsInitCmd) {
-    RAIIServerParameterControllerForTest noRefreshFeatureFlagController(
-        "featureFlagReshardingInitNoRefresh", true);
-    // If establishAllDonorsAsParticipants is called during kPreparingToDonate, it throws
-    // InternalError and resharding fails.
-    externalState()->throwUnrecoverableErrorIn(CoordinatorStateEnum::kPreparingToDonate,
-                                               kEstablishAllDonorsAsParticipants);
-
-    runReshardingToCompletion();
-}
-
 TEST_F(ReshardingCoordinatorServiceTest, NoRefreshApplyingWithFeatureFlag) {
     RAIIServerParameterControllerForTest noRefreshFeatureFlagController(
         "featureFlagReshardingNoRefreshApplyingAndBlockingWrites", true);
@@ -2912,22 +2903,7 @@ TEST_F(ReshardingCoordinatorServiceTest, NoRefreshApplyingWithFeatureFlag) {
     runReshardingToCompletion();
 }
 
-TEST_F(ReshardingCoordinatorServiceTest, FeatureFlagReshardingInitNoRefreshSendsRecipientInitCmd) {
-    RAIIServerParameterControllerForTest noRefreshFeatureFlagController(
-        "featureFlagReshardingInitNoRefresh", true);
-    // If establishAllRecipientsAsParticipants is called during kPreparingToDonate, it throws
-    // InternalError and resharding fails.
-    externalState()->throwUnrecoverableErrorIn(CoordinatorStateEnum::kPreparingToDonate,
-                                               kEstablishAllRecipientsAsParticipants);
-
-    runReshardingToCompletion();
-}
-
-TEST_F(ReshardingCoordinatorServiceTest,
-       FeatureFlagReshardingInitNoRefreshSkipsParticipantWaitOnAbort) {
-    RAIIServerParameterControllerForTest noRefreshFeatureFlagController(
-        "featureFlagReshardingInitNoRefresh", true);
-
+TEST_F(ReshardingCoordinatorServiceTest, SkipsParticipantWaitOnAbort) {
     PauseDuringStateTransitions stateTransitionsGuard{controller(),
                                                       CoordinatorStateEnum::kPreparingToDonate};
 
@@ -2950,8 +2926,8 @@ TEST_F(ReshardingCoordinatorServiceTest,
         }
     }
 
-    // Abort while all participants are still in kUnused. With featureFlagReshardingInitNoRefresh,
-    // coordinator completion will not hang on abort. See SERVER-92857.
+    // Abort while all participants are still in kUnused, which previously would cause a hang on
+    // abort. See SERVER-92857.
     coordinator->abort({resharding::kUserAbortReason, resharding::AbortType::kAbortSkipQuiesce});
 
     ASSERT_EQ(coordinator->getCompletionFuture().getNoThrow(),

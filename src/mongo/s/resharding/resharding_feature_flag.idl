@@ -136,7 +136,8 @@ feature_flags:
         mod_visibility: public
         description: "Feature flag to skip shard version refresh during resharding initialization."
         cpp_varname: gFeatureFlagReshardingInitNoRefresh
-        default: false
+        default: true
+        version: 9.0
         fcv_gated: true
     featureFlagReshardingRegistry:
         mod_visibility: public
