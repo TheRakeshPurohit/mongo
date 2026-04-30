@@ -169,7 +169,8 @@ StringData toString(ReadSourceReason reason) {
 }
 
 NodeRole getNodeRole(OperationContext* opCtx) {
-    return repl::ReplicationCoordinator::get(opCtx)->getMemberState().primary()
+    return repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesForDatabase_UNSAFE(
+               opCtx, DatabaseName::kAdmin)
         ? NodeRole::kPrimary
         : NodeRole::kNotPrimary;
 }

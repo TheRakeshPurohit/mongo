@@ -79,6 +79,10 @@ struct ReadSourceInfo {
 
 /**
  * Returns the node's current role as kPrimary or kNotPrimary based on replication state.
+ * Note that this function is not thread safe, and should only be called from either
+ * - a pessimistic path where a db lock is held (and as consequence the RSTL is held)
+ * - an optimistic path where a the replication term is re-checked after this call.
+ * Both would ensure serialization with a concurrent stepdown/up.
  */
 NodeRole getNodeRole(OperationContext* opCtx);
 
