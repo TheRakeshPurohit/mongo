@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#include "mongo/db/dbdirectclient.h"
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/global_settings.h"
 #include "mongo/db/op_observer/op_observer_impl.h"
@@ -35,17 +36,21 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/apply_ops_command_info.h"
 #include "mongo/db/repl/mock_repl_coord_server_fixture.h"
+#include "mongo/db/repl/oplog_entry.h"
 #include "mongo/db/repl/oplog_interface_local.h"
 #include "mongo/db/repl/storage_interface_impl.h"
-#include "mongo/db/replicated_fast_count/replicated_fast_count_delta_utils.h"
 #include "mongo/db/replicated_fast_count/replicated_fast_count_init.h"
 #include "mongo/db/replicated_fast_count/replicated_fast_count_manager.h"
 #include "mongo/db/replicated_fast_count/replicated_fast_count_test_helpers.h"
 #include "mongo/db/session/session_catalog_mongod.h"
+#include "mongo/db/session/session_txn_record_gen.h"
 #include "mongo/db/shard_role/shard_catalog/catalog_raii.h"
 #include "mongo/db/shard_role/shard_catalog/create_collection.h"
 #include "mongo/db/transaction/session_catalog_mongod_transaction_interface_impl.h"
+#include "mongo/db/transaction/transaction_participant.h"
+#include "mongo/idl/idl_parser.h"
 #include "mongo/unittest/unittest.h"
+#include "mongo/util/fail_point.h"
 
 namespace mongo::replicated_fast_count {
 namespace {
@@ -55,10 +60,8 @@ namespace {
  */
 class ReplicatedFastCountTxnFixture : public MockReplCoordServerFixture {
 public:
-    ReplicatedFastCountTxnFixture()
-        : MockReplCoordServerFixture(Options().setPersistenceProvider(
-              std::make_unique<replicated_fast_count_test_helpers::
-                                   ReplicatedFastCountTestPersistenceProvider>())) {}
+    explicit ReplicatedFastCountTxnFixture(Options options = {})
+        : MockReplCoordServerFixture(options.useReplSettings(true)) {}
 
 protected:
     void setUp() override {
@@ -206,7 +209,15 @@ protected:
     UUID _uuid2 = UUID::gen();
 };
 
-TEST_F(ReplicatedFastCountTxnFixture,
+class ReplicatedFastCountTxnTest : public ReplicatedFastCountTxnFixture {
+public:
+    ReplicatedFastCountTxnTest()
+        : ReplicatedFastCountTxnFixture(Options().setPersistenceProvider(
+              std::make_unique<replicated_fast_count_test_helpers::
+                                   ReplicatedFastCountTestPersistenceProvider>())) {}
+};
+
+TEST_F(ReplicatedFastCountTxnTest,
        UncommittedChangesPreservedAcrossResumedMultiDocumentTransactionCommit) {
     RAIIServerParameterControllerForTest featureFlag("featureFlagReplicatedFastCount", true);
 
@@ -268,7 +279,7 @@ TEST_F(ReplicatedFastCountTxnFixture,
     replicated_fast_count_test_helpers::checkUncommittedFastCountChanges(_opCtx, *uuid, 0, 0);
 }
 
-TEST_F(ReplicatedFastCountTxnFixture, UncommittedChangesDiscardedAfterMultiDocumentTxnAbort) {
+TEST_F(ReplicatedFastCountTxnTest, UncommittedChangesDiscardedAfterMultiDocumentTxnAbort) {
     RAIIServerParameterControllerForTest featureFlag("featureFlagReplicatedFastCount", true);
 
     auto doc1 = BSON("_id" << 0 << "x" << 1);
@@ -310,7 +321,7 @@ TEST_F(ReplicatedFastCountTxnFixture, UncommittedChangesDiscardedAfterMultiDocum
     replicated_fast_count_test_helpers::checkUncommittedFastCountChanges(_opCtx, *uuid, 0, 0);
 }
 
-TEST_F(ReplicatedFastCountTxnFixture, FastCountResetForSessionBetweenTransactions) {
+TEST_F(ReplicatedFastCountTxnTest, FastCountResetForSessionBetweenTransactions) {
     // Tests that the 'UncommittedFastCountChange' is reset when there is a new
     // 'RecoveryUnit::Snapshot', even across a single OperationContext.
     RAIIServerParameterControllerForTest featureFlag("featureFlagReplicatedFastCount", true);
@@ -348,7 +359,7 @@ TEST_F(ReplicatedFastCountTxnFixture, FastCountResetForSessionBetweenTransaction
     abortTxn(_opCtx, sessionId, txnNumber);
 }
 
-TEST_F(ReplicatedFastCountTxnFixture, ApplyOpsOplogEntryContainsSizeDeltaMetadataSingleInsert) {
+TEST_F(ReplicatedFastCountTxnTest, ApplyOpsOplogEntryContainsSizeDeltaMetadataSingleInsert) {
     RAIIServerParameterControllerForTest featureFlag("featureFlagReplicatedFastCount", true);
 
     auto doc = BSON("_id" << 0 << "x" << 1);
@@ -381,7 +392,7 @@ TEST_F(ReplicatedFastCountTxnFixture, ApplyOpsOplogEntryContainsSizeDeltaMetadat
         {.uuid = uuid, .opType = repl::OpTypeEnum::kInsert, .expectedSizeDelta = doc.objsize()});
 }
 
-TEST_F(ReplicatedFastCountTxnFixture, ApplyOpsOplogEntryContainsSizeDeltaMetadata) {
+TEST_F(ReplicatedFastCountTxnTest, ApplyOpsOplogEntryContainsSizeDeltaMetadata) {
     RAIIServerParameterControllerForTest featureFlag("featureFlagReplicatedFastCount", true);
 
     // Both collections begin empty.
@@ -488,6 +499,360 @@ TEST_F(ReplicatedFastCountTxnFixture, ApplyOpsOplogEntryContainsSizeDeltaMetadat
     ASSERT_TRUE(deltas.contains(_uuid2));
     ASSERT_EQ(expectedDeltasColl2, deltas.at(_uuid2));
 }
+
+
+/**
+ * Tests that prepared transactions write sizeMetadata to the session txn record and commit oplog
+ * entry.
+ */
+class PreparedSizeMetadataTest : public ReplicatedFastCountTxnFixture {
+protected:
+    PreparedSizeMetadataTest(Options options = {})
+        : ReplicatedFastCountTxnFixture(options.useReplSettings(true)) {}
+    void setUp() override {
+        ReplicatedFastCountTxnFixture::setUp();
+        setGlobalFailPoint("skipCommitTxnCheckPrepareMajorityCommitted",
+                           BSON("mode" << "alwaysOn"));
+    }
+
+    void tearDown() override {
+        setGlobalFailPoint("skipCommitTxnCheckPrepareMajorityCommitted", BSON("mode" << "off"));
+        ReplicatedFastCountTxnFixture::tearDown();
+    }
+
+    const BSONObj docA = BSON("_id" << 0 << "data" << "x");
+    const BSONObj docB = BSON("_id" << 1 << "data" << "y");
+    const BSONObj docC = BSON("_id" << 0 << "data" << "z");
+
+    struct ExpectedSizeEntry {
+        UUID uuid;
+        int64_t sz;
+        int64_t ct;
+    };
+
+    /**
+     * Appends an in-memory 'insert' operation for each doc to the transaction's operation list.
+     * Automatically generates the size delta and includes it in the transaction operation. No
+     * writes are persisted to the `nss` collection.
+     */
+    void addTransactionInsertOps(OperationContext* opCtx,
+                                 const NamespaceString& nss,
+                                 const std::vector<BSONObj>& docs) {
+        AutoGetCollection coll(opCtx, nss, MODE_IX);
+        auto txnParticipant = TransactionParticipant::get(opCtx);
+        for (const auto& doc : docs) {
+            auto operation = repl::DurableOplogEntry::makeInsertOperation(
+                nss, coll->uuid(), doc, doc["_id"].wrap());
+            operation.setSizeMetadata(repl::OplogEntrySizeMetadata{
+                SingleOpSizeMetadata(static_cast<int32_t>(doc.objsize()))});
+            txnParticipant.addTransactionOperation(opCtx, operation);
+        }
+    }
+
+    Timestamp prepareTxn(LogicalSessionId sessionId, TxnNumber txnNumber) {
+        auto newClientOwned = getServiceContext()->getService()->makeClient("prepareTxnClient");
+        AlternativeClientRegion acr(newClientOwned);
+        auto opCtxHolder = cc().makeOperationContext();
+        auto opCtx = opCtxHolder.get();
+
+        opCtx->setLogicalSessionId(sessionId);
+        opCtx->setTxnNumber(txnNumber);
+        opCtx->setInMultiDocumentTransaction();
+
+        auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
+        auto ocs = mongoDSessionCatalog->checkOutSession(opCtx);
+        auto txnParticipant = TransactionParticipant::get(opCtx);
+
+        txnParticipant.beginOrContinue(opCtx,
+                                       {txnNumber},
+                                       false /* autocommit */,
+                                       TransactionParticipant::TransactionActions::kContinue);
+        txnParticipant.unstashTransactionResources(opCtx, "prepareTransaction");
+        auto prepareTs = txnParticipant.prepareTransaction(opCtx, {}).first;
+        txnParticipant.stashTransactionResources(opCtx);
+        return prepareTs;
+    }
+
+    void commitPreparedTxn(LogicalSessionId sessionId, TxnNumber txnNumber, Timestamp prepareTs) {
+        auto newClientOwned =
+            getServiceContext()->getService()->makeClient("commitPreparedTxnClient");
+        AlternativeClientRegion acr(newClientOwned);
+        auto opCtxHolder = cc().makeOperationContext();
+        auto opCtx = opCtxHolder.get();
+
+        opCtx->setLogicalSessionId(sessionId);
+        opCtx->setTxnNumber(txnNumber);
+        opCtx->setInMultiDocumentTransaction();
+
+        auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
+        auto ocs = mongoDSessionCatalog->checkOutSession(opCtx);
+        auto txnParticipant = TransactionParticipant::get(opCtx);
+
+        txnParticipant.beginOrContinue(opCtx,
+                                       {txnNumber},
+                                       false /* autocommit */,
+                                       TransactionParticipant::TransactionActions::kContinue);
+        txnParticipant.unstashTransactionResources(opCtx, "commitTransaction");
+        const auto commitTs = Timestamp(prepareTs.getSecs(), prepareTs.getInc() + 1);
+        txnParticipant.commitPreparedTransaction(opCtx, commitTs, {});
+        txnParticipant.stashTransactionResources(opCtx);
+    }
+
+    SessionTxnRecord getTxnRecord(const LogicalSessionId& sessionId) {
+        DBDirectClient client(_opCtx);
+        FindCommandRequest findRequest{NamespaceString::kSessionTransactionsTableNamespace};
+        findRequest.setFilter(BSON("_id" << sessionId.toBSON()));
+        auto cursor = client.find(std::move(findRequest));
+        ASSERT(cursor && cursor->more());
+        auto record = SessionTxnRecord::parse(cursor->next(), IDLParserContext("getTxnRecord"));
+        ASSERT(!cursor->more());
+        return record;
+    }
+
+    void assertSizeMetadataEqual(const std::vector<MultiOpSizeMetadata>& actual,
+                                 const std::vector<MultiOpSizeMetadata>& expected) {
+        std::vector<ExpectedSizeEntry> entries;
+        for (const auto& e : expected) {
+            entries.push_back({e.getUuid(), e.getSz(), e.getCt()});
+        }
+        assertSizeMetadata(actual, entries);
+    }
+
+    void assertSizeMetadata(const std::vector<MultiOpSizeMetadata>& actual,
+                            std::vector<ExpectedSizeEntry> expected) {
+        ASSERT_EQ(actual.size(), expected.size());
+        std::unordered_map<UUID, const MultiOpSizeMetadata*, UUID::Hash> byUuid;
+        for (const auto& entry : actual) {
+            byUuid[entry.getUuid()] = &entry;
+        }
+        for (const auto& [uuid, sz, ct] : expected) {
+            ASSERT_TRUE(byUuid.count(uuid));
+            EXPECT_EQ(byUuid[uuid]->getSz(), sz);
+            EXPECT_EQ(byUuid[uuid]->getCt(), ct);
+        }
+    }
+
+    /**
+     * Prepares the given transaction and returns a SessionTxnRecordForPrepareRecovery capturing
+     * its state, including any computed sizeMetadata. The session is stashed before returning.
+     */
+    SessionTxnRecordForPrepareRecovery prepareTxnAndCaptureRecoveryRecord(
+        LogicalSessionId sessionId, TxnNumber txnNumber) {
+        auto newClientOwned = getServiceContext()->getService()->makeClient("prepareTxnClient");
+        AlternativeClientRegion acr(newClientOwned);
+        auto opCtxHolder = cc().makeOperationContext();
+        auto opCtx = opCtxHolder.get();
+
+        opCtx->setLogicalSessionId(sessionId);
+        opCtx->setTxnNumber(txnNumber);
+        opCtx->setInMultiDocumentTransaction();
+
+        auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
+        auto ocs = mongoDSessionCatalog->checkOutSession(opCtx);
+        auto txnParticipant = TransactionParticipant::get(opCtx);
+
+        txnParticipant.beginOrContinue(opCtx,
+                                       {txnNumber},
+                                       false /* autocommit */,
+                                       TransactionParticipant::TransactionActions::kContinue);
+        txnParticipant.unstashTransactionResources(opCtx, "prepareTransaction");
+        txnParticipant.prepareTransaction(opCtx, {});
+
+        SessionTxnRecord txnRecord;
+        txnRecord.setState(DurableTxnStateEnum::kPrepared);
+        txnRecord.setSessionId(sessionId);
+        txnRecord.setTxnNum(txnNumber);
+        txnRecord.setLastWriteOpTime(txnParticipant.getLastWriteOpTime());
+        txnRecord.setLastWriteDate(Date_t::now());
+        txnParticipant.addPreparedTransactionPreciseCheckpointRecoveryFields(txnRecord);
+        if (const auto& sizeMetadata = txnParticipant.getPreparedSizeMetadata()) {
+            txnRecord.setSizeMetadata(*sizeMetadata);
+        }
+
+        txnParticipant.stashTransactionResources(opCtx);
+        return SessionTxnRecordForPrepareRecovery(std::move(txnRecord));
+    }
+
+    /**
+     * Restores a prepared transaction from a precise checkpoint record on a fresh client and
+     * returns the participant's preparedSizeMetadata.
+     */
+    boost::optional<std::vector<MultiOpSizeMetadata>> restoreFromCheckpointAndGetSizeMetadata(
+        LogicalSessionId sessionId,
+        TxnNumber txnNumber,
+        SessionTxnRecordForPrepareRecovery recoveryRecord) {
+        auto newClientOwned = getServiceContext()->getService()->makeClient("recoverClient");
+        AlternativeClientRegion acr(newClientOwned);
+        auto opCtxHolder = cc().makeOperationContext();
+        auto opCtx = opCtxHolder.get();
+
+        opCtx->setLogicalSessionId(sessionId);
+        opCtx->setTxnNumber(txnNumber);
+        opCtx->setInMultiDocumentTransaction();
+
+        auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
+        auto ocs = mongoDSessionCatalog->checkOutSessionWithoutRefresh(opCtx);
+        auto txnParticipant = TransactionParticipant::get(opCtx);
+
+        txnParticipant.unstashTransactionResources(opCtx, "prepareTransaction");
+        for (const auto& ns : recoveryRecord.getAffectedNamespaces()) {
+            (void)acquireCollection(opCtx,
+                                    CollectionAcquisitionRequest::fromOpCtx(
+                                        opCtx, ns, AcquisitionPrerequisites::kWrite),
+                                    MODE_IX);
+        }
+
+        txnParticipant.restorePreparedTxnFromPreciseCheckpoint(opCtx, std::move(recoveryRecord));
+        return txnParticipant.getPreparedSizeMetadata();
+    }
+};
+
+TEST_F(PreparedSizeMetadataTest, PrepareTransactionWritesSizeMetadataToSessionTxnRecord) {
+    RAIIServerParameterControllerForTest flagReplicatedFastCount("featureFlagReplicatedFastCount",
+                                                                 true);
+    RAIIServerParameterControllerForTest flagDurability("featureFlagReplicatedFastCountDurability",
+                                                        true);
+
+    auto sessionId = makeLogicalSessionIdForTest();
+    TxnNumber txnNumber(0);
+
+    beginTxn(sessionId, txnNumber, [&](OperationContext* opCtx) {
+        addTransactionInsertOps(opCtx, _nss1, {docA, docB});
+        addTransactionInsertOps(opCtx, _nss2, {docC});
+    });
+    prepareTxn(sessionId, txnNumber);
+
+    auto txnRecord = getTxnRecord(sessionId);
+    ASSERT_TRUE(txnRecord.getSizeMetadata().has_value());
+    assertSizeMetadata(*txnRecord.getSizeMetadata(),
+                       {{_uuid1, docA.objsize() + docB.objsize(), 2}, {_uuid2, docC.objsize(), 1}});
+
+    abortTxn(sessionId, txnNumber);
+}
+
+TEST_F(PreparedSizeMetadataTest, PrepareTransactionWritesSizeMetadataForSplitLinkedApplyOps) {
+    RAIIServerParameterControllerForTest flagBase("featureFlagReplicatedFastCount", true);
+    RAIIServerParameterControllerForTest flagDurability("featureFlagReplicatedFastCountDurability",
+                                                        true);
+    // Force a split after every 2 ops, so 3 total ops yields 2 linked applyOps entries.
+    RAIIServerParameterControllerForTest maxOps(
+        "maxNumberOfTransactionOperationsInSingleOplogEntry", 2);
+
+    auto sessionId = makeLogicalSessionIdForTest();
+    TxnNumber txnNumber(0);
+
+    beginTxn(sessionId, txnNumber, [&](OperationContext* opCtx) {
+        addTransactionInsertOps(opCtx, _nss1, {docA, docB});
+        addTransactionInsertOps(opCtx, _nss2, {docC});
+    });
+    prepareTxn(sessionId, txnNumber);
+
+    auto txnRecord = getTxnRecord(sessionId);
+    ASSERT_TRUE(txnRecord.getSizeMetadata().has_value());
+    assertSizeMetadata(*txnRecord.getSizeMetadata(),
+                       {{_uuid1, docA.objsize() + docB.objsize(), 2}, {_uuid2, docC.objsize(), 1}});
+
+    abortTxn(sessionId, txnNumber);
+}
+
+TEST_F(PreparedSizeMetadataTest, CommitTransactionWritesSizeMetadataToOplogEntry) {
+    RAIIServerParameterControllerForTest flagReplicatedFastCount("featureFlagReplicatedFastCount",
+                                                                 true);
+    RAIIServerParameterControllerForTest flagDurability("featureFlagReplicatedFastCountDurability",
+                                                        true);
+
+    auto sessionId = makeLogicalSessionIdForTest();
+    TxnNumber txnNumber(0);
+
+    beginTxn(sessionId, txnNumber, [&](OperationContext* opCtx) {
+        addTransactionInsertOps(opCtx, _nss1, {docA, docB});
+        addTransactionInsertOps(opCtx, _nss2, {docC});
+    });
+    auto prepareTs = prepareTxn(sessionId, txnNumber);
+    commitPreparedTxn(sessionId, txnNumber, prepareTs);
+
+    repl::OplogInterfaceLocal oplogInterface(_opCtx);
+    auto oplogIter = oplogInterface.makeIterator();
+    auto commitOplogObj = unittest::assertGet(oplogIter->next()).first;
+    auto commitEntry = unittest::assertGet(repl::OplogEntry::parse(commitOplogObj));
+
+    ASSERT_TRUE(commitEntry.getSizeMetadata().has_value());
+    const auto* multiOpMeta =
+        std::get_if<std::vector<MultiOpSizeMetadata>>(&commitEntry.getSizeMetadata().value());
+    ASSERT_NE(multiOpMeta, nullptr);
+    assertSizeMetadata(*multiOpMeta,
+                       {{_uuid1, docA.objsize() + docB.objsize(), 2}, {_uuid2, docC.objsize(), 1}});
+}
+
+TEST_F(PreparedSizeMetadataTest,
+       RestorePreciseCheckpointPopulatesPreparedSizeMetadataOnParticipant) {
+    RAIIServerParameterControllerForTest flagReplicatedFastCount("featureFlagReplicatedFastCount",
+                                                                 true);
+    RAIIServerParameterControllerForTest flagDurability("featureFlagReplicatedFastCountDurability",
+                                                        true);
+
+    auto sessionId = makeLogicalSessionIdForTest();
+    TxnNumber txnNumber(0);
+
+    beginTxn(sessionId, txnNumber, [&](OperationContext* opCtx) {
+        addTransactionInsertOps(opCtx, _nss1, {docA, docB});
+        addTransactionInsertOps(opCtx, _nss2, {docC});
+    });
+    auto recoveryRecord = prepareTxnAndCaptureRecoveryRecord(sessionId, txnNumber);
+
+    // Capture the sizeMetadata from the participant state before simulating a restart.
+    ASSERT_TRUE(recoveryRecord.getSizeMetadata().has_value());
+    const auto sizeMetadataBeforeRestart = *recoveryRecord.getSizeMetadata();
+
+    SessionCatalog::get(getServiceContext())->reset_forTest();
+
+    // After restoring from the checkpoint record, the participant's sizeMetadata should be
+    // identical to what was present before the restart.
+    const auto restoredSizeMetadata =
+        restoreFromCheckpointAndGetSizeMetadata(sessionId, txnNumber, std::move(recoveryRecord));
+
+    ASSERT_TRUE(restoredSizeMetadata.has_value());
+    assertSizeMetadataEqual(*restoredSizeMetadata, sizeMetadataBeforeRestart);
+}
+
+
+struct PreparedSizeMetadataFlagParams {
+    // Whether `featureFlagReplicatedFastCount` is enabled.
+    bool baseFlagEnabled;
+    // Whether `featureFlagReplicatedFastCountDurability` is enabled.
+    bool durabilityFlagEnabled;
+};
+
+class PreparedSizeMetadataFlagTest
+    : public PreparedSizeMetadataTest,
+      public testing::WithParamInterface<PreparedSizeMetadataFlagParams> {};
+
+TEST_P(PreparedSizeMetadataFlagTest,
+       OmitsSizeMetadataFromConfigTransactionsUnlessBothFlagsEnabled) {
+    const auto [baseFlagEnabled, durabilityFlagEnabled] = GetParam();
+
+    RAIIServerParameterControllerForTest flagBase("featureFlagReplicatedFastCount",
+                                                  baseFlagEnabled);
+    RAIIServerParameterControllerForTest flagDurability("featureFlagReplicatedFastCountDurability",
+                                                        durabilityFlagEnabled);
+    auto sessionId = makeLogicalSessionIdForTest();
+    TxnNumber txnNumber(0);
+
+    beginTxn(sessionId, txnNumber, [&](OperationContext* opCtx) {
+        addTransactionInsertOps(opCtx, _nss1, {BSON("_id" << 0 << "data" << "x")});
+    });
+    prepareTxn(sessionId, txnNumber);
+
+    EXPECT_FALSE(getTxnRecord(sessionId).getSizeMetadata().has_value());
+
+    abortTxn(sessionId, txnNumber);
+}
+
+INSTANTIATE_TEST_SUITE_P(SizeMetadataFlagCombinations,
+                         PreparedSizeMetadataFlagTest,
+                         testing::Values(PreparedSizeMetadataFlagParams{false, false},
+                                         PreparedSizeMetadataFlagParams{true, false},
+                                         PreparedSizeMetadataFlagParams{false, true}));
 
 }  // namespace
 }  // namespace mongo::replicated_fast_count

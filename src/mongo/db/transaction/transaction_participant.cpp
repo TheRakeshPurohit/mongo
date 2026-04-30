@@ -2128,6 +2128,7 @@ void TransactionParticipant::Participant::restorePreparedTxnFromPreciseCheckpoin
         for (auto&& ns : txnRecord.getAffectedNamespaces()) {
             o(lg).affectedNamespaces.emplace(std::move(ns));
         }
+        p().preparedSizeMetadata = std::move(txnRecord.getSizeMetadata());
 
         p().recoveredFromPreciseCheckpointRequiresOplogScan = true;
         p().transactionOperations.markAsUnavailable();
@@ -3663,6 +3664,11 @@ void TransactionParticipant::Participant::addToAffectedNamespaces(OperationConte
     o(lk).affectedNamespaces.emplace(nss);
 }
 
+void TransactionParticipant::Participant::setPreparedSizeMetadata(
+    boost::optional<std::vector<MultiOpSizeMetadata>> metadata) {
+    p().preparedSizeMetadata = std::move(metadata);
+}
+
 void TransactionParticipant::Participant::onRetryableWriteCloningCompleted(
     OperationContext* opCtx,
     std::vector<StmtId> stmtIdsWritten,
@@ -3712,6 +3718,7 @@ void TransactionParticipant::Participant::_resetTransactionStateAndUnlock(
     }
 
     p().transactionOperations.reset();
+    p().preparedSizeMetadata = boost::none;
     o(*lk).affectedNamespaces.clear();
     o(*lk).prepareOpTime = repl::OpTime();
     o(*lk).recoveryPrepareOpTime = repl::OpTime();

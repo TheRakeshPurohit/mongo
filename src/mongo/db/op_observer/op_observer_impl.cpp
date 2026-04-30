@@ -431,6 +431,25 @@ void assertBatchedDDLNotMixedWithCRUD(OperationContext* opCtx) {
     }
 }
 
+/**
+ * Expects callers to be in an active transaction so it can retrieve state from the
+ * `TransactionParticipant` decorated on the current `opCtx`.
+ *
+ * Returns the size metadata for a prepared transaction that should be written to the session
+ * transaction record and commitTransaction oplog entry. Returns `boost::none` if persistence of
+ * replicated fast count prepared transaction metadata isn't supported.
+ */
+boost::optional<std::vector<MultiOpSizeMetadata>> getPreparedSizeMetadataForPersistence(
+    OperationContext* opCtx) {
+    if (!shouldPersistPreparedTxnSizeMetadata(opCtx)) {
+        return boost::none;
+    }
+    auto txnParticipant = TransactionParticipant::get(opCtx);
+    // Crash instead of throwing, since this may be called from functions marked noexcept.
+    invariant(txnParticipant, "Getting prepared size metadata without an active transaction");
+    return txnParticipant.getPreparedSizeMetadata();
+}
+
 }  // namespace
 
 OpObserverImpl::OpObserverImpl(std::unique_ptr<OperationLogger> operationLogger)
@@ -2060,16 +2079,14 @@ std::size_t getMaxSizeOfBatchedOperationsInSingleOplogEntryBytes() {
 // updated after the oplog entry is written.
 //
 // Returns the optime of the written oplog entry.
-repl::OpTime logApplyOps(
-    OperationContext* opCtx,
-    MutableOplogEntry* oplogEntry,
-    boost::optional<DurableTxnStateEnum> txnState,
-    boost::optional<repl::OpTime> startOpTime,
-    std::vector<StmtId> stmtIdsWritten,
-    const bool updateTxnTable,
-    WriteUnitOfWork::OplogEntryGroupType oplogGroupingFormat,
-    OperationLogger* operationLogger,
-    boost::optional<std::vector<MultiOpSizeMetadata>> preparedTxnSizeMetadata = boost::none) {
+repl::OpTime logApplyOps(OperationContext* opCtx,
+                         MutableOplogEntry* oplogEntry,
+                         boost::optional<DurableTxnStateEnum> txnState,
+                         boost::optional<repl::OpTime> startOpTime,
+                         std::vector<StmtId> stmtIdsWritten,
+                         const bool updateTxnTable,
+                         WriteUnitOfWork::OplogEntryGroupType oplogGroupingFormat,
+                         OperationLogger* operationLogger) {
 
     const auto txnRetryCounter = opCtx->getTxnRetryCounter();
     if (oplogGroupingFormat == WriteUnitOfWork::kGroupForPossiblyRetryableOperations) {
@@ -2118,8 +2135,8 @@ repl::OpTime logApplyOps(
             }
 
             if (txnState && *txnState == DurableTxnStateEnum::kPrepared) {
-                if (preparedTxnSizeMetadata && shouldPersistPreparedTxnSizeMetadata(opCtx)) {
-                    sessionTxnRecord.setSizeMetadata(std::move(preparedTxnSizeMetadata));
+                if (auto sizeMetadata = getPreparedSizeMetadataForPersistence(opCtx)) {
+                    sessionTxnRecord.setSizeMetadata(std::move(sizeMetadata));
                 }
                 if (rss::ReplicatedStorageService::get(opCtx)
                         .getPersistenceProvider()
@@ -2510,6 +2527,10 @@ void OpObserverImpl::onPreparedTransactionCommit(OperationContext* opCtx,
     cmdObj.setCommitTimestamp(commitTimestamp);
     oplogEntry.setObject(cmdObj.toBSON());
 
+    if (auto sizeMetadata = getPreparedSizeMetadataForPersistence(opCtx)) {
+        oplogEntry.setSizeMetadata(repl::OplogEntrySizeMetadata{std::move(*sizeMetadata)});
+    }
+
     logCommitOrAbortForPreparedTransaction(
         opCtx, &oplogEntry, DurableTxnStateEnum::kCommitted, _operationLogger.get());
 }
@@ -2536,13 +2557,12 @@ void OpObserverImpl::onTransactionPrepare(
     // OplogSlotReserver.
     invariant(shard_role_details::getLocker(opCtx)->isWriteLocked());
 
-    // Aggregate size metadata once across all prepared operations rather than re-parsing each
-    // applyOps entry's inner ops after batching. Applies to both non-empty and empty (read-only)
-    // transactions so "m" field is consistently persisted when supported.
-    const boost::optional<std::vector<MultiOpSizeMetadata>> preparedTxnSizeMetadata =
-        shouldPersistPreparedTxnSizeMetadata(opCtx)
-        ? boost::make_optional(replicated_fast_count::aggregateMultiOpSizeMetadata(statements))
-        : boost::none;
+    if (shouldPersistPreparedTxnSizeMetadata(opCtx)) {
+        auto txnParticipant = TransactionParticipant::get(opCtx);
+        invariant(txnParticipant, "Preparing transaction without an active transaction");
+        txnParticipant.setPreparedSizeMetadata(
+            replicated_fast_count::aggregateMultiOpSizeMetadata(statements));
+    }
 
     // It is possible that the transaction resulted in no changes, In that case, we
     // should not write any operations other than the prepare oplog entry.
@@ -2577,15 +2597,12 @@ void OpObserverImpl::onTransactionPrepare(
             : reservedSlots.front();
 
         auto logApplyOpsForPreparedTransaction =
-            [opCtx, operationLogger = _operationLogger.get(), startOpTime, preparedTxnSizeMetadata](
+            [opCtx, operationLogger = _operationLogger.get(), startOpTime](
                 repl::MutableOplogEntry* oplogEntry,
                 bool firstOp,
                 bool lastOp,
                 std::vector<StmtId> stmtIdsWritten,
                 WriteUnitOfWork::OplogEntryGroupType oplogGroupingFormat) {
-                // Size metadata is written to the session transaction record only when the
-                // transaction is moved to the prepared state, which is done as a part of the last
-                // `applyOps` entry when there is a chained sequence.
                 return logApplyOps(
                     opCtx,
                     oplogEntry,
@@ -2595,8 +2612,7 @@ void OpObserverImpl::onTransactionPrepare(
                     std::move(stmtIdsWritten),
                     /*updateTxnTable=*/(firstOp || lastOp),
                     oplogGroupingFormat,
-                    operationLogger,
-                    /*preparedTxnSizeMetadata=*/lastOp ? preparedTxnSizeMetadata : boost::none);
+                    operationLogger);
             };
 
         // We had reserved enough oplog slots for the worst case where each operation
@@ -2640,8 +2656,7 @@ void OpObserverImpl::onTransactionPrepare(
                     /*stmtIdsWritten=*/{},
                     /*updateTxnTable=*/true,
                     WriteUnitOfWork::kDontGroup,
-                    _operationLogger.get(),
-                    preparedTxnSizeMetadata);
+                    _operationLogger.get());
     }
 }
 

@@ -5,6 +5,7 @@
  */
 
 import {PrepareHelpers} from "jstests/core/txns/libs/prepare_helpers.js";
+import {FeatureFlagUtil} from "jstests/libs/feature_flag_util.js";
 import {ReplSetTest} from "jstests/libs/replsettest.js";
 import {PersistenceProviderUtil} from "jstests/libs/server-rss/persistence_provider_util.js";
 import {getOplogEntriesForTxnOnNode} from "jstests/sharding/libs/sharded_transactions_helpers.js";
@@ -57,21 +58,46 @@ export function checkPrepareTxnTableUpdate(primary, secondary, commitOrAbort, ch
         if (isMultiversion) {
             delete primaryTxnEntry.affectedNamespaces;
             delete secondaryTxnEntry.affectedNamespaces;
+            delete primaryTxnEntry.m;
+            delete secondaryTxnEntry.m;
         }
 
         assert.eq(primaryTxnEntry, secondaryTxnEntry);
         assert.eq(primaryTxnEntry["state"], "prepared");
         assert.eq(primaryTxnEntry["lastWriteOpTime"]["ts"], preparedTs);
+        if (!isMultiversion) {
+            if (
+                PersistenceProviderUtil.allNodesHavePropertyWithValue(
+                    primary,
+                    "supportsPreservingPreparedTxnInPreciseCheckpoints",
+                    true,
+                )
+            ) {
+                assert.eq(primaryTxnEntry["affectedNamespaces"], expectedAffectedNamespaces);
+            }
 
-        if (
-            PersistenceProviderUtil.allNodesHavePropertyWithValue(
-                primary,
-                "supportsPreservingPreparedTxnInPreciseCheckpoints",
-                true,
-            ) &&
-            !isMultiversion
-        ) {
-            assert.eq(primaryTxnEntry["affectedNamespaces"], expectedAffectedNamespaces);
+            if (
+                (FeatureFlagUtil.isPresentAndEnabled(
+                    primary.getDB("admin"),
+                    "featureFlagReplicatedFastCountDurability",
+                ) ||
+                    PersistenceProviderUtil.allNodesHavePropertyWithValue(
+                        primary,
+                        "shouldUseReplicatedFastCount",
+                        true,
+                    )) &&
+                FeatureFlagUtil.isPresentAndEnabled(primary.getDB("admin"), "featureFlagReplicatedFastCount")
+            ) {
+                assert(
+                    primaryTxnEntry.hasOwnProperty("m"),
+                    "primaryTxnEntry missing 'm' field: " + tojson(primaryTxnEntry),
+                );
+                assert(
+                    secondaryTxnEntry.hasOwnProperty("m"),
+                    "secondaryTxnEntry missing 'm' field: " + tojson(secondaryTxnEntry),
+                );
+                assert.eq(primaryTxnEntry["m"], secondaryTxnEntry["m"]);
+            }
         }
     };
 

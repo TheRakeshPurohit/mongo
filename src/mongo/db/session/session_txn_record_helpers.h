@@ -41,6 +41,7 @@ class MONGO_MOD_PUB SessionTxnRecordForPrepareRecovery : private SessionTxnRecor
 public:
     using SessionTxnRecord::getLastWriteOpTime;
     using SessionTxnRecord::getSessionId;
+    using SessionTxnRecord::getSizeMetadata;
     using SessionTxnRecord::getTxnNum;
     using SessionTxnRecord::getTxnRetryCounter;
 

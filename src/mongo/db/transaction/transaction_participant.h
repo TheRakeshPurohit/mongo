@@ -45,6 +45,7 @@
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/repl/split_prepare_session_manager.h"
+#include "mongo/db/replicated_fast_count/durable_size_metadata_gen.h"
 #include "mongo/db/session/logical_session_id.h"
 #include "mongo/db/session/logical_session_id_gen.h"
 #include "mongo/db/session/session.h"
@@ -804,6 +805,12 @@ public:
          */
         void addToAffectedNamespaces(OperationContext* opCtx, const NamespaceString& nss);
 
+        const boost::optional<std::vector<MultiOpSizeMetadata>>& getPreparedSizeMetadata() const {
+            return p().preparedSizeMetadata;
+        }
+
+        void setPreparedSizeMetadata(boost::optional<std::vector<MultiOpSizeMetadata>> metadata);
+
         /**
          * Called after an entry for the specified session and transaction has been written to the
          * oplog during chunk migration, while the node is still primary. Must be called while the
@@ -1427,6 +1434,10 @@ private:
         // is the case when we have (or may have) written or replicated an oplog entry for the
         // transaction.
         bool needToWriteAbortEntry{false};
+
+        // Caches the per-collection size and count deltas across a prepared transaction. Aligns
+        // with the `sizeMetadata` persisted to the `config.transactions` entry once prepared.
+        boost::optional<std::vector<MultiOpSizeMetadata>> preparedSizeMetadata;
     } _p;
 };  // class TransactionParticipant
 
