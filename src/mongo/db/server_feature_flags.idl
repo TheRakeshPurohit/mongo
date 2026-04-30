@@ -330,6 +330,11 @@ feature_flags:
         cpp_varname: gFeatureFlagDSCLinearizableReadConcern
         default: false
         fcv_gated: false
+    featureFlagKEKPushMode:
+        description: "Enable push mode for KEKs."
+        cpp_varname: gFeatureFlagKEKPushMode
+        default: false
+        fcv_gated: false
 
 server_parameters:
     allowDirectSystemBucketsAccess:
