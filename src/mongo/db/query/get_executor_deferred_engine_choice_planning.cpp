@@ -305,6 +305,16 @@ StatusWith<std::unique_ptr<PlannerInterface>> preparePlanner(
     // TODO SERVER-120492: Investigate if we can remove the replanning restriction on
     // subplanning. If not, add a descriptive comment here about why.
     if (!replanning && SubplanStage::needsSubplanning(*cq)) {
+        LOGV2_DEBUG(12507600,
+                    2,
+                    "Running query as sub-queries",
+                    "query"_attr = redact(cq->toStringShort()));
+
+        // Forced plan solution hash doesn't make sense to be accessed in QueryPlanner::plan()
+        // during subplanning. It would need to be applicable to all branches.
+        uassert(ErrorCodes::IllegalOperation,
+                "Use of forcedPlanSolutionHash not permitted for rooted $or queries.",
+                !cq->getForcedPlanSolutionHash());
         return std::make_unique<SubPlanner>(makePlannerData(cachedPlanHash));
     }
 
