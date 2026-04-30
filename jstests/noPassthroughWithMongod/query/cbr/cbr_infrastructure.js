@@ -303,7 +303,9 @@ function verifyCollectionCardinalityEstimate() {
 
 function verifyHeuristicEstimateSource() {
     coll.drop();
-    assert.commandWorked(coll.insert({a: 1}));
+    // Use enough docs so that the heuristic estimate is strictly less than the
+    // collection cardinality to ensure that the heuristic estimate will deterministically be used.
+    assert.commandWorked(coll.insertMany(Array.from({length: 100}, (_, i) => ({a: i}))));
     assert.commandWorked(coll.createIndex({a: 1}));
     assert.commandWorked(
         db.adminCommand({setParameter: 1, featureFlagCostBasedRanker: true, internalQueryCBRCEMode: "heuristicCE"}),

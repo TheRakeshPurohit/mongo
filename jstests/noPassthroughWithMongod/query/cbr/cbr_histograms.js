@@ -84,7 +84,7 @@ try {
         // Negations
         {query: {a: {$lt: 5, $ne: 6}}, expectedCE: 485.99},
         // not equal: (total size: 4952, max value: 98)
-        {query: {a: {$ne: -1}}, expectedCE: 4952},
+        {query: {a: {$ne: 5}}, expectedCE: 4858},
         {query: {a: {$ne: 90}}, expectedCE: 4906},
     ];
     testCases.forEach((tc) => assertQueryUsesHistograms(tc));
@@ -99,13 +99,27 @@ try {
     histogramColl.drop();
     assert.commandWorked(coll.createIndex({a: 1}));
     assert.commandWorked(
-        coll.insertMany([{a: null, b: 0}, {a: null, b: 1}, {a: null, b: 2}, {a: null, b: 3}, {b: 4}, {b: 5}, {b: 6}]),
+        coll.insertMany([
+            {a: null, b: 0},
+            {a: null, b: 1},
+            {a: null, b: 2},
+            {a: null, b: 3},
+            {b: 4},
+            {b: 5},
+            {b: 6},
+            // These won't match the predicate {b: {$lte: 6}}, to ensure that the histogram estimate
+            // will deterministically be used instead of the collection cardinality.
+            {a: null, b: 7},
+            {a: null, b: 8},
+            {a: null, b: 9},
+        ]),
     );
     assert.commandWorked(coll.runCommand({analyze: collName, key: "a", numberBuckets: 10}));
+    assert.commandWorked(coll.runCommand({analyze: collName, key: "b", numberBuckets: 10}));
     assert.commandWorked(
         db.adminCommand({setParameter: 1, featureFlagCostBasedRanker: true, internalQueryCBRCEMode: "histogramCE"}),
     );
-    const explain = coll.find({a: null}).explain();
+    const explain = coll.find({a: null, b: {$lte: 6}}).explain();
     [getWinningPlanFromExplain(explain), ...getRejectedPlans(explain)].forEach((plan) => {
         assert.eq(plan.estimatesMetadata.ceSource, "Histogram", plan);
         assert.close(plan.cardinalityEstimate, 7);
