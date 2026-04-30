@@ -14,7 +14,7 @@ UNASSIGNED_LABEL = "~ Unassigned"
 
 class JiraCustomFieldId(str, Enum):
     ASSIGNED_TEAMS = "customfield_12751"
-    TEAM_ASSIGNMENT_DURATION = "customfield_28251"
+    TEAM_ASSIGNMENT_TIMESTAMP = "customfield_28352"
 
 
 class IssueTuple(NamedTuple):
@@ -33,9 +33,12 @@ class IssueTuple(NamedTuple):
         assigned_team = (
             cls._get_first_value(issue, JiraCustomFieldId.ASSIGNED_TEAMS) or UNASSIGNED_LABEL
         )
-        raw_duration = getattr(issue.fields, JiraCustomFieldId.TEAM_ASSIGNMENT_DURATION, None)
-        if raw_duration is not None:
-            duration_hours = int(raw_duration)
+        raw_timestamp = getattr(issue.fields, JiraCustomFieldId.TEAM_ASSIGNMENT_TIMESTAMP, None)
+        if raw_timestamp is not None:
+            assignment_time = dateutil.parser.parse(raw_timestamp)
+            duration_hours = int(
+                (datetime.now(timezone.utc) - assignment_time).total_seconds() / 3600
+            )
         else:
             created_time = dateutil.parser.parse(issue.fields.created)
             duration_hours = int((datetime.now(timezone.utc) - created_time).total_seconds() / 3600)
