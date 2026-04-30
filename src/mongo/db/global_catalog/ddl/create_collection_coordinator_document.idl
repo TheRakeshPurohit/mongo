@@ -71,7 +71,7 @@ structs:
                 description: "The shard key that will be used by the DDL while accessing the Sharding Catalog"
                 optional: false
             collation:
-                type: object_owned
+                type: Collation
                 description: "Collation value from the targeted unsharded collection if this exists; otherwise, simple-collation"
                 optional: false
             timeseries:

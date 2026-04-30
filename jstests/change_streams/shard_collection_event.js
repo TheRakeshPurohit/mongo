@@ -210,7 +210,16 @@ function runTest(startChangeStream) {
                 "unique": false,
                 "presplitHashedZones": false,
                 "capped": false,
-                "collation": {"locale": "simple"},
+                "collation": {
+                    "locale": "simple",
+                    "caseLevel": false,
+                    "caseFirst": "off",
+                    "strength": 3,
+                    "numericOrdering": false,
+                    "alternate": "non-ignorable",
+                    "maxVariable": "punct",
+                    "normalization": false,
+                },
             },
         },
     );
