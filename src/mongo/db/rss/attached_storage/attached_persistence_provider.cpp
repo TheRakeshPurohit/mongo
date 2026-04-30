@@ -238,8 +238,4 @@ bool AttachedPersistenceProvider::supportsColdCollections() const {
     return false;
 }
 
-bool AttachedPersistenceProvider::enforcesChangeStreamReadPreferenceOnGetMore() const {
-    return true;
-}
-
 }  // namespace mongo::rss

@@ -1,12 +1,14 @@
-//
-// Basic $changeStream tests for operations that perform queryable encryption.
-//
-// @tags: [
-// change_stream_does_not_expect_txns,
-// assumes_unsharded_collection,
-// requires_fcv_71
-// ]
-//
+/**
+ * Basic $changeStream tests for operations that perform queryable encryption.
+ *
+ * @tags: [
+ *   # The test is not compatible with opening change streams on secondaries.
+ *   assumes_read_preference_unchanged,
+ *   change_stream_does_not_expect_txns,
+ *   assumes_unsharded_collection,
+ *   requires_fcv_71
+ * ]
+ */
 import {EncryptedClient, isEnterpriseShell} from "jstests/fle2/libs/encrypted_client_util.js";
 import {canonicalizeEventForTesting, ChangeStreamTest} from "jstests/libs/query/change_stream_util.js";
 

@@ -6,6 +6,7 @@ overrides:
   - "change_streams.base_eval"
 eval:
   - "change_streams.secondary_reads_eval"
+  - "change_streams.causal_consistency_eval"
   - "change_streams.whole_db_eval"
 excludes:
   - "change_streams.mongos_passthrough_excludes"

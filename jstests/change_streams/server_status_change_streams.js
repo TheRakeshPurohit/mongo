@@ -3,6 +3,9 @@
  * command output.
  *
  * @tags: [
+ *   # The test assumes that serverStatus metrics are retrieved from the same instance that the
+ *   # change streams are opened on, which is not guaranteed when change streams are opened on secondaries.
+ *   assumes_read_preference_unchanged,
  *   change_stream_does_not_expect_txns,
  *   # Can be removed once last-lts and last-continuous are >= 9.0.
  *   requires_fcv_90,

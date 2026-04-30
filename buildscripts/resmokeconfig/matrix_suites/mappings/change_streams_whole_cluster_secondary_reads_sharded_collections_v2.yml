@@ -15,11 +15,10 @@ overrides:
   - "change_streams.base_eval"
 eval:
   - "change_streams.secondary_reads_eval"
+  - "change_streams.causal_consistency_eval"
   - "change_streams.sharded_collections_passthrough_eval"
   - "change_streams.whole_cluster_eval"
   - "change_streams.change_streams_v2_eval"
-  #uncomment this line if you comment out the secondary reads portion of this file
-  # - "change_streams.causal_consistency"
 excludes:
   - "change_streams.mongos_passthrough_excludes"
   - "change_streams.sharded_collections_passthrough_excludes"

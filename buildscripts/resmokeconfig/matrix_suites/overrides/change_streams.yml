@@ -10,7 +10,7 @@
             globalThis.testingReplication = true;
             await import('jstests/libs/override_methods/set_read_and_write_concerns.js');
 
-- name: causal_consistency
+- name: causal_consistency_eval
   value:
     eval: await import('jstests/libs/override_methods/enable_causal_consistency_without_read_pref.js');
 
@@ -113,6 +113,7 @@
   value:
     exclude_with_any_tags:
       - assumes_read_preference_unchanged
+      - does_not_support_causal_consistency
     exclude_files:
       - jstests/change_streams/only_wake_getmore_for_relevant_changes.js
 

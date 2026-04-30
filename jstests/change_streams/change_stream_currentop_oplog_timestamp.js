@@ -6,7 +6,10 @@
  *   requires_getmore,
  *   # TODO SERVER-123932: Remove the 'assumes_against_mongod_not_mongos' tag once the metrics are available on mongos.
  *   assumes_against_mongod_not_mongos,
+ *   # The test assumes that cursors are opened on the primary, which is not guaranteed when change streams
+ *   # are opened on secondaries.
  *   assumes_no_implicit_cursor_exhaustion,
+ *   assumes_read_preference_unchanged,
  *   requires_fcv_90
  * ]
  */

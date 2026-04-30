@@ -2,6 +2,8 @@
  * Tests that change streams correctly handle rewrites of null, existence and equality checks, for
  * both existent and non-existent fields and subfields.
  * @tags: [
+ *   # The test runs a lot of queries and is massively slower when running against a secondary.
+ *   assumes_read_preference_unchanged,
  *   requires_pipeline_optimization,
  *   uses_change_streams,
  *   # This test runs too long to be included in code coverage:

@@ -2,7 +2,6 @@
  * Use prototype overrides to set read preference to "secondary" when running tests.
  */
 import {OverrideHelpers} from "jstests/libs/override_methods/override_helpers.js";
-import {extractUUIDFromObject} from "jstests/libs/uuid_util.js";
 
 const kReadPreferenceSecondary = {
     mode: "secondary",
@@ -37,20 +36,6 @@ const CursorTracker = (function () {
     };
 })();
 
-/**
- * Returns a random integer between the given range (inclusive).
- */
-function getRandInteger(min, max) {
-    return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-/**
- * Returns a random element in the given array.
- */
-function getRandomElement(arr) {
-    return arr[getRandInteger(0, arr.length - 1)];
-}
-
 function runCommandWithReadPreferenceSecondary(conn, dbName, commandName, commandObj, func, makeFuncArgs) {
     if (typeof commandObj !== "object" || commandObj === null) {
         return func.apply(conn, makeFuncArgs(commandObj));
@@ -64,7 +49,7 @@ function runCommandWithReadPreferenceSecondary(conn, dbName, commandName, comman
         );
     }
 
-    if (conn.isReplicaSetConnection() || TestData.connectDirectlyToRandomSubsetOfSecondaries) {
+    if (conn.isReplicaSetConnection()) {
         // When a "getMore" or "killCursors" command is issued on a replica set connection, we
         // attempt to automatically route the command to the server the cursor(s) were
         // originally established on. This makes it possible to use the
@@ -132,6 +117,10 @@ function runCommandWithReadPreferenceSecondary(conn, dbName, commandName, comman
             // only accepts 'local' read concern. While valid, these options would not ensure causal
             // consistency.
             shouldForceReadPreference = false;
+        } else if (OverrideHelpers.isAggregationWithOutOrMergeStage(commandName, commandObj)) {
+            // Can't set a secondary read preference on aggregation pipelines containing $out or
+            // $merge, because the pipeline needs to write to the collection.
+            shouldForceReadPreference = false;
         }
     }
 
@@ -160,7 +149,7 @@ function runCommandWithReadPreferenceSecondary(conn, dbName, commandName, comman
     const serverResponse = func.apply(conn, makeFuncArgs(commandObj));
 
     if (
-        (conn.isReplicaSetConnection() || TestData.connectDirectlyToRandomSubsetOfSecondaries) &&
+        conn.isReplicaSetConnection() &&
         kCursorGeneratingCommands.has(commandName) &&
         serverResponse.ok === 1 &&
         serverResponse.hasOwnProperty("cursor")

@@ -147,11 +147,6 @@ void ensureChangeStreamReadPreferenceCanBeSatisfied(OperationContext* opCtx,
         return;
     }
 
-    const auto& provider = rss::ReplicatedStorageService::get(opCtx).getPersistenceProvider();
-    if (!provider.enforcesChangeStreamReadPreferenceOnGetMore()) {
-        return;
-    }
-
     const auto readPref = cursorPin->getReadPreferenceSetting().pref;
 
     // Flexible preferences are always satisfiable regardless of node role.
