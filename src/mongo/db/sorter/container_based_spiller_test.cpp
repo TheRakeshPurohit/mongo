@@ -128,6 +128,17 @@ TEST(ContainerIteratorTest, Iterate) {
 
     // Before iteration starts, getRange() reports no current position.
     EXPECT_FALSE(iterator.getRange().getCurrent().has_value());
+    EXPECT_FALSE(iterator.getRange().getCurrentChecksum().has_value());
+
+    size_t prevChecksum = 0;
+    boost::optional<int64_t> currentChecksum;
+
+    auto checkChecksum = [&](const ContainerIterator<IntWrapper, IntWrapper>& it) {
+        currentChecksum = it.getRange().getCurrentChecksum();
+        ASSERT(currentChecksum.has_value());
+        EXPECT_NE(*currentChecksum, prevChecksum);
+        prevChecksum = *currentChecksum;
+    };
 
     ASSERT_TRUE(iterator.more());
     auto next = iterator.next();
@@ -135,6 +146,7 @@ TEST(ContainerIteratorTest, Iterate) {
     EXPECT_EQ(next.second, value1);
     ASSERT_TRUE(iterator.getRange().getCurrent().has_value());
     EXPECT_EQ(*iterator.getRange().getCurrent(), containerKey1);
+    checkChecksum(iterator);
 
     ASSERT_TRUE(iterator.more());
     next = iterator.next();
@@ -142,18 +154,21 @@ TEST(ContainerIteratorTest, Iterate) {
     EXPECT_EQ(next.second, value2);
     ASSERT_TRUE(iterator.getRange().getCurrent().has_value());
     EXPECT_EQ(*iterator.getRange().getCurrent(), containerKey2);
+    checkChecksum(iterator);
 
     ASSERT_TRUE(iterator.more());
     EXPECT_EQ(iterator.nextWithDeferredValue(), key3);
     EXPECT_EQ(iterator.getDeferredValue(), value3);
     ASSERT_TRUE(iterator.getRange().getCurrent().has_value());
     EXPECT_EQ(*iterator.getRange().getCurrent(), containerKey3);
+    checkChecksum(iterator);
 
     ASSERT_TRUE(iterator.more());
     EXPECT_EQ(iterator.nextWithDeferredValue(), key4);
     EXPECT_EQ(iterator.getDeferredValue(), value4);
     ASSERT_TRUE(iterator.getRange().getCurrent().has_value());
     EXPECT_EQ(*iterator.getRange().getCurrent(), containerKey4);
+    checkChecksum(iterator);
 
     ASSERT_TRUE(iterator.more());
     next = iterator.next();
@@ -161,12 +176,14 @@ TEST(ContainerIteratorTest, Iterate) {
     EXPECT_EQ(next.second, value5);
     ASSERT_TRUE(iterator.getRange().getCurrent().has_value());
     EXPECT_EQ(*iterator.getRange().getCurrent(), containerKey5);
+    checkChecksum(iterator);
 
     EXPECT_FALSE(iterator.more());
 
     // After exhaustion, getRange() reports the last key consumed.
     ASSERT_TRUE(iterator.getRange().getCurrent().has_value());
     EXPECT_EQ(*iterator.getRange().getCurrent(), containerKey5);
+    EXPECT_EQ(*iterator.getRange().getCurrentChecksum(), prevChecksum);
 
     // Construct an iterator starting at key 4.
     ContainerIterator<IntWrapper, IntWrapper> positionedIterator{
@@ -179,17 +196,22 @@ TEST(ContainerIteratorTest, Iterate) {
         /*currentChecksum=*/1727402339,
         sorter::kLatestChecksumVersion};
 
+    prevChecksum = 1727402339;
+    currentChecksum = boost::none;
+
     ASSERT_TRUE(positionedIterator.more());
     EXPECT_EQ(positionedIterator.nextWithDeferredValue(), key4);
     EXPECT_EQ(positionedIterator.getDeferredValue(), value4);
     ASSERT_TRUE(positionedIterator.getRange().getCurrent().has_value());
     EXPECT_EQ(*positionedIterator.getRange().getCurrent(), containerKey4);
+    checkChecksum(positionedIterator);
 
     ASSERT_TRUE(positionedIterator.more());
     EXPECT_EQ(positionedIterator.nextWithDeferredValue(), key5);
     EXPECT_EQ(positionedIterator.getDeferredValue(), value5);
     ASSERT_TRUE(positionedIterator.getRange().getCurrent().has_value());
     EXPECT_EQ(*positionedIterator.getRange().getCurrent(), containerKey5);
+    checkChecksum(positionedIterator);
 }
 
 TEST(ContainerIteratorTest, MultipleCursors) {

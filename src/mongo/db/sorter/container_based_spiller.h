@@ -145,6 +145,7 @@ public:
         SorterRange range{_start, _end, static_cast<int64_t>(_originalChecksum)};
         if (_positioned) {
             range.setCurrent(_position);
+            range.setCurrentChecksum(_checksumCalculator.checksum());
         }
         return range;
     }
