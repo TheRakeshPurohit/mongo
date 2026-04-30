@@ -912,7 +912,9 @@ TEST_F(AsyncTryWithRetryStrategyTest,
 TEST_F(AsyncTryWithRetryStrategyTest, AsyncTryWithRetryStrategyCanBeCanceled) {
     auto strategy = std::make_shared<TestRetryStrategy>();
     CancellationSource cancelSource;
-    auto resultFut = AsyncTry([](const TargetingMetadata&) {})
+    auto resultFut = AsyncTry([](const TargetingMetadata&) {
+                         return Status{ErrorCodes::InternalError, "retry"};
+                     })
                          .withRetryStrategy(strategy)
                          .on(executor(), cancelSource.token());
     // This should hang forever if it is not canceled.
