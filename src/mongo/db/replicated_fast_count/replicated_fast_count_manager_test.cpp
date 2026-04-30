@@ -54,8 +54,9 @@ protected:
         ASSERT_OK(
             createReplicatedFastCountTimestampCollection(storageInterface(), operationContext()));
 
-        manager =
-            std::make_unique<ReplicatedFastCountManager>(sizeCountStore, sizeCountTimestampStore);
+        manager = std::make_unique<ReplicatedFastCountManager>(
+            std::make_unique<CollectionSizeCountStore>(),
+            std::make_unique<CollectionSizeCountTimestampStore>());
     }
 
     test_helpers::NsAndUUID collA = {
@@ -65,8 +66,8 @@ protected:
         .nss = NamespaceString::createNamespaceString_forTest("find_test", "collB"),
         .uuid = UUID::gen()};
 
-    SizeCountStore sizeCountStore;
-    SizeCountTimestampStore sizeCountTimestampStore;
+    CollectionSizeCountStore sizeCountStore;
+    CollectionSizeCountTimestampStore sizeCountTimestampStore;
     std::unique_ptr<ReplicatedFastCountManager> manager;
 };
 
@@ -87,7 +88,7 @@ TEST_F(ReplicatedFastCountManagerFindLatestTest, FindLatestCombinesStoredValuesW
     test_helpers::insertSizeCountEntry(operationContext(),
                                        sizeCountStore,
                                        collA.uuid,
-                                       {.timestamp = Timestamp::min(), .size = 5, .count = 1});
+                                       SizeCountStore::Entry(Timestamp::min(), 5, 1));
     test_helpers::insertSizeCountTimestamp(
         operationContext(), sizeCountTimestampStore, Timestamp::min());
 
@@ -113,7 +114,7 @@ TEST_F(ReplicatedFastCountManagerFindLatestTest, FindLatestReturnsStoredValuesWh
     test_helpers::insertSizeCountEntry(operationContext(),
                                        sizeCountStore,
                                        collA.uuid,
-                                       {.timestamp = Timestamp::min(), .size = 42, .count = 7});
+                                       SizeCountStore::Entry(Timestamp::min(), 42, 7));
     test_helpers::insertSizeCountTimestamp(
         operationContext(), sizeCountTimestampStore, Timestamp::min());
 
@@ -126,11 +127,11 @@ TEST_F(ReplicatedFastCountManagerFindLatestTest, FindLatestFiltersToRequestedUui
     test_helpers::insertSizeCountEntry(operationContext(),
                                        sizeCountStore,
                                        collA.uuid,
-                                       {.timestamp = Timestamp::min(), .size = 5, .count = 1});
+                                       SizeCountStore::Entry(Timestamp::min(), 5, 1));
     test_helpers::insertSizeCountEntry(operationContext(),
                                        sizeCountStore,
                                        collB.uuid,
-                                       {.timestamp = Timestamp::min(), .size = 100, .count = 10});
+                                       SizeCountStore::Entry(Timestamp::min(), 100, 10));
     test_helpers::insertSizeCountTimestamp(
         operationContext(), sizeCountTimestampStore, Timestamp::min());
 

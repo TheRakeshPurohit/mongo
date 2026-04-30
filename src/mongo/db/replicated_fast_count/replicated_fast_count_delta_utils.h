@@ -46,11 +46,6 @@
 namespace mongo {
 namespace replicated_fast_count {
 
-inline constexpr StringData kMetadataKey = "meta"_sd;
-inline constexpr StringData kSizeKey = "sz"_sd;
-inline constexpr StringData kCountKey = "ct"_sd;
-inline constexpr StringData kValidAsOfKey = "valid-as-of"_sd;
-
 /**
  * Data structure mapping collection UUIDs to their size and count deltas.
  *
@@ -118,20 +113,6 @@ OplogScanResult aggregateSizeCountDeltasInOplog(
     const Timestamp& seekAfterTS,
     const boost::optional<UUID>& uuidFilter = boost::none,
     bool isCheckpoint = false);
-
-/**
- * Acquires the replicated fast count collection for read access.
- * Returns boost::none if the collection does not exist.
- */
-boost::optional<CollectionOrViewAcquisition> acquireFastCountCollectionForRead(
-    OperationContext* opCtx);
-
-/**
- * Acquire the fastcount collection that underpins this class with write intent.
- * Returns boost::none if it doesn't exist.
- */
-boost::optional<CollectionOrViewAcquisition> acquireFastCountCollectionForWrite(
-    OperationContext* opCtx);
 
 /**
  * For each entry in 'deltas', looks up the persisted size and count for that UUID in the

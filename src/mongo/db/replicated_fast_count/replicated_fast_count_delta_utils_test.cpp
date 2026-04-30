@@ -55,7 +55,7 @@ class ReadAndIncrementSizeCountsTest : public CatalogTestFixture {};
 
 TEST_F(ReadAndIncrementSizeCountsTest, IncrementZeros) {
     ASSERT_OK(createReplicatedFastCountCollection(storageInterface(), operationContext()));
-    SizeCountStore store;
+    CollectionSizeCountStore store;
 
     const UUID uuid = UUID::gen();
     SizeCountDeltas deltas;
@@ -69,7 +69,7 @@ TEST_F(ReadAndIncrementSizeCountsTest, IncrementZeros) {
     EXPECT_EQ(deltas[uuid].sizeCount.count, 0);
 
     test_helpers::insertSizeCountEntry(
-        operationContext(), store, uuid, {.timestamp = Timestamp(1, 1), .size = 0, .count = 0});
+        operationContext(), store, uuid, SizeCountStore::Entry(Timestamp(1, 1), 0, 0));
 
     // Read after (0,0) document exists.
     readAndIncrementSizeCounts(operationContext(), deltas);
@@ -81,11 +81,11 @@ TEST_F(ReadAndIncrementSizeCountsTest, IncrementZeros) {
 
 TEST_F(ReadAndIncrementSizeCountsTest, NegativeResult) {
     ASSERT_OK(createReplicatedFastCountCollection(storageInterface(), operationContext()));
-    SizeCountStore store;
+    CollectionSizeCountStore store;
 
     const UUID uuid = UUID::gen();
     test_helpers::insertSizeCountEntry(
-        operationContext(), store, uuid, {.timestamp = Timestamp(1, 1), .size = 200, .count = 10});
+        operationContext(), store, uuid, SizeCountStore::Entry(Timestamp(1, 1), 200, 10));
 
     SizeCountDeltas deltas;
     deltas[uuid] =
@@ -105,15 +105,15 @@ TEST_F(ReadAndIncrementSizeCountsTest, NegativeResult) {
  */
 TEST_F(ReadAndIncrementSizeCountsTest, ReadEmptySet) {
     ASSERT_OK(createReplicatedFastCountCollection(storageInterface(), operationContext()));
-    SizeCountStore store;
+    CollectionSizeCountStore store;
 
     const UUID uuid1 = UUID::gen();
     test_helpers::insertSizeCountEntry(
-        operationContext(), store, uuid1, {.timestamp = Timestamp(1, 1), .size = 200, .count = 10});
+        operationContext(), store, uuid1, SizeCountStore::Entry(Timestamp(1, 1), 200, 10));
 
     const UUID uuid2 = UUID::gen();
     test_helpers::insertSizeCountEntry(
-        operationContext(), store, uuid2, {.timestamp = Timestamp(1, 1), .size = 100, .count = 5});
+        operationContext(), store, uuid2, SizeCountStore::Entry(Timestamp(1, 1), 100, 5));
 
     SizeCountDeltas deltas;
 
@@ -129,15 +129,15 @@ TEST_F(ReadAndIncrementSizeCountsTest, ReadEmptySet) {
  */
 TEST_F(ReadAndIncrementSizeCountsTest, ReadDocumentEqualSet) {
     ASSERT_OK(createReplicatedFastCountCollection(storageInterface(), operationContext()));
-    SizeCountStore store;
+    CollectionSizeCountStore store;
 
     const UUID uuid1 = UUID::gen();
     test_helpers::insertSizeCountEntry(
-        operationContext(), store, uuid1, {.timestamp = Timestamp(1, 1), .size = 200, .count = 10});
+        operationContext(), store, uuid1, SizeCountStore::Entry(Timestamp(1, 1), 200, 10));
 
     const UUID uuid2 = UUID::gen();
     test_helpers::insertSizeCountEntry(
-        operationContext(), store, uuid2, {.timestamp = Timestamp(1, 1), .size = 100, .count = 5});
+        operationContext(), store, uuid2, SizeCountStore::Entry(Timestamp(1, 1), 100, 5));
 
     SizeCountDeltas deltas;
     deltas[uuid1] = SizeCountDelta{.sizeCount = {5, 1}, .state = DDLState::kNone};
@@ -159,15 +159,15 @@ TEST_F(ReadAndIncrementSizeCountsTest, ReadDocumentEqualSet) {
  */
 TEST_F(ReadAndIncrementSizeCountsTest, ReadDocumentSubset) {
     ASSERT_OK(createReplicatedFastCountCollection(storageInterface(), operationContext()));
-    SizeCountStore store;
+    CollectionSizeCountStore store;
 
     const UUID uuid1 = UUID::gen();
     test_helpers::insertSizeCountEntry(
-        operationContext(), store, uuid1, {.timestamp = Timestamp(1, 1), .size = 200, .count = 10});
+        operationContext(), store, uuid1, SizeCountStore::Entry(Timestamp(1, 1), 200, 10));
 
     const UUID uuid2 = UUID::gen();
     test_helpers::insertSizeCountEntry(
-        operationContext(), store, uuid2, {.timestamp = Timestamp(1, 1), .size = 100, .count = 5});
+        operationContext(), store, uuid2, SizeCountStore::Entry(Timestamp(1, 1), 100, 5));
 
     SizeCountDeltas deltas;
     deltas[uuid1] = SizeCountDelta{.sizeCount = {5, 1}, .state = DDLState::kNone};
@@ -186,11 +186,11 @@ TEST_F(ReadAndIncrementSizeCountsTest, ReadDocumentSubset) {
  */
 TEST_F(ReadAndIncrementSizeCountsTest, ReadDocumentSuperset) {
     ASSERT_OK(createReplicatedFastCountCollection(storageInterface(), operationContext()));
-    SizeCountStore store;
+    CollectionSizeCountStore store;
 
     const UUID uuid1 = UUID::gen();
     test_helpers::insertSizeCountEntry(
-        operationContext(), store, uuid1, {.timestamp = Timestamp(1, 1), .size = 200, .count = 10});
+        operationContext(), store, uuid1, SizeCountStore::Entry(Timestamp(1, 1), 200, 10));
 
     const UUID uuid2 = UUID::gen();
     SizeCountDeltas deltas;
@@ -213,15 +213,15 @@ TEST_F(ReadAndIncrementSizeCountsTest, ReadDocumentSuperset) {
  */
 TEST_F(ReadAndIncrementSizeCountsTest, ReadDocumentsDisjointSet) {
     ASSERT_OK(createReplicatedFastCountCollection(storageInterface(), operationContext()));
-    SizeCountStore store;
+    CollectionSizeCountStore store;
 
     const UUID uuid1 = UUID::gen();
     test_helpers::insertSizeCountEntry(
-        operationContext(), store, uuid1, {.timestamp = Timestamp(1, 1), .size = 200, .count = 10});
+        operationContext(), store, uuid1, SizeCountStore::Entry(Timestamp(1, 1), 200, 10));
 
     const UUID uuid2 = UUID::gen();
     test_helpers::insertSizeCountEntry(
-        operationContext(), store, uuid2, {.timestamp = Timestamp(1, 1), .size = 100, .count = 5});
+        operationContext(), store, uuid2, SizeCountStore::Entry(Timestamp(1, 1), 100, 5));
 
     const UUID uuid3 = UUID::gen();
     SizeCountDeltas deltas;

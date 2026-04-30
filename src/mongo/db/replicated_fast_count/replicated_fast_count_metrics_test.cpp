@@ -379,8 +379,8 @@ protected:
     }
 
     OperationContext* opCtx;
-    SizeCountStore sizeCountStore;
-    SizeCountTimestampStore timestampStore;
+    CollectionSizeCountStore sizeCountStore;
+    CollectionSizeCountTimestampStore timestampStore;
     OtelMetricsCapturer capturer;
 };
 

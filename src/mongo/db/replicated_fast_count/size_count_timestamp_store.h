@@ -31,6 +31,8 @@
 
 #include "mongo/bson/timestamp.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/db/storage/record_store.h"
+#include "mongo/util/assert_util.h"
 
 #include <boost/optional/optional.hpp>
 
@@ -41,23 +43,63 @@ namespace mongo::replicated_fast_count {
  *
  * This class is useful for tracking when persisted size and count metadata were last known to be
  * accurate and thus the timestamp after which the oplog is needed for correctness.
+ *
+ * Two implementations exist: `CollectionSizeCountTimestampStore` (collection-backed) and
+ * `ContainerSizeCountTimestampStore` (container-backed).
  */
 class SizeCountTimestampStore {
 public:
+    SizeCountTimestampStore() = default;
+    virtual ~SizeCountTimestampStore() = default;
+
+    SizeCountTimestampStore(SizeCountTimestampStore&&) = default;
+    SizeCountTimestampStore& operator=(SizeCountTimestampStore&&) = default;
+    SizeCountTimestampStore(const SizeCountTimestampStore&) = delete;
+    SizeCountTimestampStore& operator=(const SizeCountTimestampStore&) = delete;
+
     /**
      * Returns the last written timestamp.
      *
      * If no timestamp exists, read() returns boost::none.
      */
-    [[nodiscard]] boost::optional<Timestamp> read(OperationContext* opCtx) const;
+    [[nodiscard]] virtual boost::optional<Timestamp> read(OperationContext* opCtx) const = 0;
 
     /**
-     * Upserts `timestamp` into the `config.fast_count_metadata_store_timestamps` store. If a
-     * timestamp already exists, it will be replaced.
+     * Upserts `timestamp` into the store. If a timestamp already exists, it will be replaced.
      *
      * write() must be called within a WriteUnitOfWork. Otherwise, the function raises an assertion
      * error.
      */
-    void write(OperationContext* opCtx, Timestamp timestamp);
+    virtual void write(OperationContext* opCtx, Timestamp timestamp) = 0;
+};
+
+/**
+ * Collection-backed implementation of `SizeCountTimestampStore`. Reads and writes target the
+ * `config.fast_count_metadata_timestamp_store` collection.
+ */
+class CollectionSizeCountTimestampStore final : public SizeCountTimestampStore {
+public:
+    CollectionSizeCountTimestampStore() = default;
+
+    boost::optional<Timestamp> read(OperationContext* opCtx) const override;
+    void write(OperationContext* opCtx, Timestamp timestamp) override;
+};
+
+/**
+ * Container-backed implementation of `SizeCountTimestampStore`. Owns the RecordStore that
+ * backs the underlying IntegerKeyedContainer.
+ */
+class ContainerSizeCountTimestampStore final : public SizeCountTimestampStore {
+public:
+    explicit ContainerSizeCountTimestampStore(std::unique_ptr<RecordStore> recordStore)
+        : _recordStore(std::move(recordStore)) {
+        invariant(_recordStore, "ContainerSizeCountTimestampStore requires a non-null RecordStore");
+    }
+
+    boost::optional<Timestamp> read(OperationContext* opCtx) const override;
+    void write(OperationContext* opCtx, Timestamp timestamp) override;
+
+private:
+    std::unique_ptr<RecordStore> _recordStore;
 };
 }  // namespace mongo::replicated_fast_count

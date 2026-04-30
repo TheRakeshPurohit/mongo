@@ -166,7 +166,7 @@ void ReplicatedFastCountManager::initializeMetadata(OperationContext* opCtx) {
     // baseline on warm restart. Without this, the gauge would stay at 0 until the first post-boot
     // checkpoint flush (primary) or the first oplog-applied write to the timestamp store
     // (secondary).
-    if (const auto persistedCheckpoint = _timestampStore.read(opCtx)) {
+    if (const auto persistedCheckpoint = _timestampStore->read(opCtx)) {
         recordCheckpointAdvanced(*persistedCheckpoint);
     }
 
@@ -240,7 +240,7 @@ CollectionSizeCount ReplicatedFastCountManager::findLatest(OperationContext* opC
     auto oplogCursor = oplogColl->getRecordStore()->getCursor(
         opCtx, *shard_role_details::getRecoveryUnit(opCtx), /*forward=*/true);
 
-    return readLatest(opCtx, _sizeCountStore, _timestampStore, *oplogCursor, uuid);
+    return readLatest(opCtx, *_sizeCountStore, *_timestampStore, *oplogCursor, uuid);
 }
 
 CollectionSizeCount ReplicatedFastCountManager::findPersisted(OperationContext* opCtx,
@@ -249,7 +249,7 @@ CollectionSizeCount ReplicatedFastCountManager::findPersisted(OperationContext* 
         return find(uuid);
     }
 
-    return readPersisted(opCtx, _sizeCountStore, uuid);
+    return readPersisted(opCtx, *_sizeCountStore, uuid);
 }
 
 void ReplicatedFastCountManager::flushAsync() {
@@ -300,7 +300,7 @@ void ReplicatedFastCountManager::_doFlush(OperationContext* opCtx,
         if (_useLegacyFlush) {
             _flushDirtyMetadata(opCtx, dirtyMetadata);
         } else {
-            advanceCheckpoint(opCtx, _sizeCountStore, _timestampStore);
+            advanceCheckpoint(opCtx, *_sizeCountStore, *_timestampStore);
         }
         _metrics.addWriteTimeMsTotal((Date_t::now() - startTime).count());
 

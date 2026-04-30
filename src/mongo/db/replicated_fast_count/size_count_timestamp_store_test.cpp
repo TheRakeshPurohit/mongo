@@ -29,74 +29,113 @@
 
 #include "mongo/db/replicated_fast_count/size_count_timestamp_store.h"
 
-#include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/replicated_fast_count/replicated_fast_count_init.h"
 #include "mongo/db/shard_role/shard_catalog/catalog_test_fixture.h"
+#include "mongo/db/storage/kv/kv_engine.h"
+#include "mongo/db/storage/storage_engine.h"
 
 namespace mongo::replicated_fast_count {
 namespace {
 
-void write(OperationContext* opCtx, Timestamp timestamp, SizeCountTimestampStore& store) {
-    WriteUnitOfWork wuow(opCtx);
-    store.write(opCtx, timestamp);
-    wuow.commit();
+enum class Mode { kCollection, kContainer };
+
+// Runs each test case in both collection-backed and container-backed modes.
+class SizeCountTimestampStoreTest : public CatalogTestFixture,
+                                    public ::testing::WithParamInterface<Mode> {
+protected:
+    void setUp() override {
+        CatalogTestFixture::setUp();
+        auto opCtx = operationContext();
+        if (GetParam() == Mode::kCollection) {
+            ASSERT_OK(createReplicatedFastCountTimestampCollection(storageInterface(), opCtx));
+            _store = std::make_unique<CollectionSizeCountTimestampStore>();
+            return;
+        }
+
+        _ffDurability = std::make_unique<RAIIServerParameterControllerForTest>(
+            "featureFlagReplicatedFastCountDurability", true);
+        _ffContainerWrites = std::make_unique<RAIIServerParameterControllerForTest>(
+            "featureFlagContainerWrites", true);
+
+        ASSERT_OK(createInternalFastCountContainers(opCtx,
+                                                    NamespaceString::kAdminCommandNamespace,
+                                                    ident::kFastCountMetadataStore,
+                                                    KeyFormat::String,
+                                                    ident::kFastCountMetadataStoreTimestamps,
+                                                    KeyFormat::Long,
+                                                    /*writeToOplog=*/false));
+
+        auto* engine = opCtx->getServiceContext()->getStorageEngine()->getEngine();
+        auto recordStore =
+            engine->getRecordStore(opCtx,
+                                   NamespaceString::kAdminCommandNamespace,
+                                   ident::kFastCountMetadataStoreTimestamps,
+                                   RecordStore::Options{.keyFormat = KeyFormat::Long},
+                                   /*uuid=*/boost::none);
+        _store = std::make_unique<ContainerSizeCountTimestampStore>(std::move(recordStore));
+    }
+
+    void writeTs(Timestamp timestamp) {
+        WriteUnitOfWork wuow(operationContext());
+        _store->write(operationContext(), timestamp);
+        wuow.commit();
+    }
+
+    std::unique_ptr<RAIIServerParameterControllerForTest> _ffDurability;
+    std::unique_ptr<RAIIServerParameterControllerForTest> _ffContainerWrites;
+    std::unique_ptr<SizeCountTimestampStore> _store;
+};
+
+TEST_P(SizeCountTimestampStoreTest, WriteMassertsWithoutWriteUnitOfWork) {
+    ASSERT_THROWS_CODE(_store->write(operationContext(), Timestamp(10, 1)), DBException, 12280400);
 }
 
-class SizeCountTimestampStoreTest : public CatalogTestFixture {};
-
-TEST_F(SizeCountTimestampStoreTest, WriteMassertsWithoutWriteUnitOfWork) {
-    ASSERT_OK(createReplicatedFastCountTimestampCollection(storageInterface(), operationContext()));
-    SizeCountTimestampStore store;
-
-    ASSERT_THROWS_CODE(store.write(operationContext(), Timestamp(10, 1)), DBException, 12280400);
+TEST_P(SizeCountTimestampStoreTest, ReadReturnsNoneWhenEmpty) {
+    EXPECT_FALSE(_store->read(operationContext()).has_value());
 }
 
-TEST_F(SizeCountTimestampStoreTest, ReadReturnsNoneWhenCollectionDoesNotExist) {
-    const SizeCountTimestampStore store;
+TEST_P(SizeCountTimestampStoreTest, ReadWriteRoundTripNewEntry) {
+    writeTs(Timestamp(10, 1));
 
-    EXPECT_FALSE(store.read(operationContext()).has_value());
-}
-
-TEST_F(SizeCountTimestampStoreTest, ReadReturnsNoneWhenDocumentDoesNotExist) {
-    ASSERT_OK(createReplicatedFastCountTimestampCollection(storageInterface(), operationContext()));
-    const SizeCountTimestampStore store;
-
-    EXPECT_FALSE(store.read(operationContext()).has_value());
-}
-
-TEST_F(SizeCountTimestampStoreTest, ReadWriteRoundTripNewEntry) {
-    ASSERT_OK(createReplicatedFastCountTimestampCollection(storageInterface(), operationContext()));
-    SizeCountTimestampStore store;
-
-    write(operationContext(), Timestamp(10, 1), store);
-
-    const auto result = store.read(operationContext());
+    const auto result = _store->read(operationContext());
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(Timestamp(10, 1), *result);
 }
 
-TEST_F(SizeCountTimestampStoreTest, WriteUpdatesExistingDocument) {
-    ASSERT_OK(createReplicatedFastCountTimestampCollection(storageInterface(), operationContext()));
-    SizeCountTimestampStore store;
-    write(operationContext(), Timestamp(10, 1), store);
+TEST_P(SizeCountTimestampStoreTest, WriteUpdatesExistingDocument) {
+    writeTs(Timestamp(10, 1));
+    writeTs(Timestamp(20, 2));
 
-    write(operationContext(), Timestamp(20, 2), store);
-
-    const auto result = store.read(operationContext());
+    const auto result = _store->read(operationContext());
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(Timestamp(20, 2), *result);
 }
 
-TEST_F(SizeCountTimestampStoreTest, WriteWithSameTimestampIsIdempotent) {
-    ASSERT_OK(createReplicatedFastCountTimestampCollection(storageInterface(), operationContext()));
-    SizeCountTimestampStore store;
+TEST_P(SizeCountTimestampStoreTest, WriteWithSameTimestampIsIdempotent) {
+    writeTs(Timestamp(10, 1));
+    writeTs(Timestamp(10, 1));
 
-    write(operationContext(), Timestamp(10, 1), store);
-    write(operationContext(), Timestamp(10, 1), store);
-
-    const auto result = store.read(operationContext());
+    const auto result = _store->read(operationContext());
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(Timestamp(10, 1), *result);
 }
+
+INSTANTIATE_TEST_SUITE_P(,
+                         SizeCountTimestampStoreTest,
+                         ::testing::Values(Mode::kCollection, Mode::kContainer),
+                         [](const ::testing::TestParamInfo<Mode>& info) {
+                             return info.param == Mode::kCollection ? "Collection" : "Container";
+                         });
+
+// Collection-only case: container mode provisions must pass an existing RecordStore to the
+// SizeCountTimestampStore constructor, so there is no equivalent "backing storage does not exist"
+// scenario to exercise.
+class SizeCountTimestampStoreCollectionModeTest : public CatalogTestFixture {};
+
+TEST_F(SizeCountTimestampStoreCollectionModeTest, ReadReturnsNoneWhenCollectionDoesNotExist) {
+    const CollectionSizeCountTimestampStore store;
+    EXPECT_FALSE(store.read(operationContext()).has_value());
+}
+
 }  // namespace
 }  // namespace mongo::replicated_fast_count

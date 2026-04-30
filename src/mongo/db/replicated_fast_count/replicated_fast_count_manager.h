@@ -95,15 +95,20 @@ class MONGO_MOD_PUBLIC ReplicatedFastCountManager {
     using FastSizeCountMap = absl::flat_hash_map<UUID, StoredSizeCount>;
 
 public:
-    MONGO_MOD_PRIVATE ReplicatedFastCountManager(SizeCountStore sizeCountStore,
-                                                 SizeCountTimestampStore timestampStore)
+    MONGO_MOD_PRIVATE ReplicatedFastCountManager(
+        std::unique_ptr<SizeCountStore> sizeCountStore,
+        std::unique_ptr<SizeCountTimestampStore> timestampStore)
         : _sizeCountStore(std::move(sizeCountStore)), _timestampStore(std::move(timestampStore)) {
+        invariant(_sizeCountStore);
+        invariant(_timestampStore);
         initializeFastCountCommitFn();
     }
 
     static ReplicatedFastCountManager& get(ServiceContext* svcCtx);
 
-    ReplicatedFastCountManager() {
+    ReplicatedFastCountManager()
+        : _sizeCountStore(std::make_unique<CollectionSizeCountStore>()),
+          _timestampStore(std::make_unique<CollectionSizeCountTimestampStore>()) {
         initializeFastCountCommitFn();
     }
 
@@ -302,12 +307,12 @@ private:
     /**
      * Interface for reads / writes to the `config.fast_count_metadata_store`.
      */
-    SizeCountStore _sizeCountStore;
+    std::unique_ptr<SizeCountStore> _sizeCountStore;
 
     /**
      * Interface for reads / writes to the `config.fast_count_metadata_timestamp_store`.
      */
-    SizeCountTimestampStore _timestampStore;
+    std::unique_ptr<SizeCountTimestampStore> _timestampStore;
 
     /**
      * In-memory cache of committed fast sizes & counts since last checkpoint.

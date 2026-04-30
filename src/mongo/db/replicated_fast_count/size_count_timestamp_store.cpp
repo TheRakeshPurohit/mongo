@@ -30,9 +30,13 @@
 #include "mongo/db/replicated_fast_count/size_count_timestamp_store.h"
 
 #include "mongo/db/collection_crud/collection_write_path.h"
-#include "mongo/db/replicated_fast_count/replicated_fast_count_delta_utils.h"
+#include "mongo/db/collection_crud/container_write.h"
+#include "mongo/db/record_id_helpers.h"
+#include "mongo/db/replicated_fast_count/size_count_store.h"
+#include "mongo/db/shard_role/lock_manager/d_concurrency.h"
 #include "mongo/db/shard_role/shard_catalog/clustered_collection_util.h"
 #include "mongo/db/shard_role/shard_role.h"
+#include "mongo/db/shard_role/transaction_resources.h"
 #include "mongo/db/storage/write_unit_of_work.h"
 #include "mongo/db/update/document_diff_calculator.h"
 #include "mongo/db/update/update_oplog_entry_serialization.h"
@@ -40,7 +44,19 @@
 namespace mongo::replicated_fast_count {
 namespace {
 
+// Used for the container implementation.
+constexpr int64_t kTimestampContainerKey = 0;
+// Used for the collection implementation.
 constexpr int32_t kTimestampDocId = 0;
+
+IntegerKeyedContainer& getIntegerKeyedContainer(RecordStore& recordStore) {
+    auto container = recordStore.getContainer();
+    massert(
+        12566000,
+        "Expected replicated fast count timestamp record store to hold an IntegerKeyedContainer",
+        std::holds_alternative<std::reference_wrapper<IntegerKeyedContainer>>(container));
+    return std::get<std::reference_wrapper<IntegerKeyedContainer>>(container);
+}
 
 boost::optional<CollectionOrViewAcquisition> acquireTimestampCollectionForRead(
     OperationContext* opCtx) {
@@ -76,9 +92,15 @@ boost::optional<CollectionOrViewAcquisition> acquireTimestampCollectionForWrite(
 
     return boost::none;
 }
+
+void assertInWriteUnitOfWork(OperationContext* opCtx) {
+    massert(12280400,
+            "SizeCountTimestampStore::write() must be called within a WriteUnitOfWork",
+            shard_role_details::getLocker(opCtx)->inAWriteUnitOfWork());
+}
 }  // namespace
 
-boost::optional<Timestamp> SizeCountTimestampStore::read(OperationContext* opCtx) const {
+boost::optional<Timestamp> CollectionSizeCountTimestampStore::read(OperationContext* opCtx) const {
     const auto acquisition = acquireTimestampCollectionForRead(opCtx);
     if (!acquisition.has_value()) {
         return boost::none;
@@ -99,10 +121,8 @@ boost::optional<Timestamp> SizeCountTimestampStore::read(OperationContext* opCtx
     return data.getField(kValidAsOfKey).timestamp();
 }
 
-void SizeCountTimestampStore::write(OperationContext* opCtx, Timestamp timestamp) {
-    massert(12280400,
-            "SizeCountTimestampStore::write() must be called within a WriteUnitOfWork",
-            shard_role_details::getLocker(opCtx)->inAWriteUnitOfWork());
+void CollectionSizeCountTimestampStore::write(OperationContext* opCtx, Timestamp timestamp) {
+    assertInWriteUnitOfWork(opCtx);
 
     const auto acquisition = acquireTimestampCollectionForWrite(opCtx).value();
     const CollectionPtr& coll = acquisition.getCollectionPtr();
@@ -131,6 +151,41 @@ void SizeCountTimestampStore::write(OperationContext* opCtx, Timestamp timestamp
     } else {
         massertStatusOK(collection_internal::insertDocument(
             opCtx, coll, InsertStatement(newDoc), /*opDebug=*/nullptr));
+    }
+}
+
+boost::optional<Timestamp> ContainerSizeCountTimestampStore::read(OperationContext* opCtx) const {
+    auto& ru = *shard_role_details::getRecoveryUnit(opCtx);
+    auto& container = getIntegerKeyedContainer(*_recordStore);
+    auto cursor = container.getCursor(ru);
+    auto result = cursor->find(kTimestampContainerKey);
+    if (!result) {
+        return boost::none;
+    }
+    BSONObj data(result->data());
+    return data.getField(kValidAsOfKey).timestamp();
+}
+
+void ContainerSizeCountTimestampStore::write(OperationContext* opCtx, Timestamp timestamp) {
+    assertInWriteUnitOfWork(opCtx);
+
+    auto& ru = *shard_role_details::getRecoveryUnit(opCtx);
+    auto& container = getIntegerKeyedContainer(*_recordStore);
+    auto val = BSON(kValidAsOfKey << timestamp);
+    std::span<const char> valSpan{val.objdata(), static_cast<size_t>(val.objsize())};
+
+    // Check if the key exists. Containers currently only support strict inserts or strict updates.
+    auto cursor = container.getCursor(ru);
+    if (cursor->find(kTimestampContainerKey)) {
+        massertStatusOK(
+            container_write::update(opCtx, ru, container, kTimestampContainerKey, valSpan));
+    } else {
+        massertStatusOK(container_write::insert(opCtx,
+                                                ru,
+                                                container,
+                                                kTimestampContainerKey,
+                                                valSpan,
+                                                container::ExistingKeyPolicy::reject));
     }
 }
 }  // namespace mongo::replicated_fast_count

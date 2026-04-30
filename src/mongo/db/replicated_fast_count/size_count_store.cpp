@@ -30,18 +30,65 @@
 #include "mongo/db/replicated_fast_count/size_count_store.h"
 
 #include "mongo/db/collection_crud/collection_write_path.h"
+#include "mongo/db/collection_crud/container_write.h"
 #include "mongo/db/record_id_helpers.h"
-#include "mongo/db/replicated_fast_count/replicated_fast_count_delta_utils.h"
+#include "mongo/db/shard_role/lock_manager/d_concurrency.h"
 #include "mongo/db/shard_role/shard_catalog/clustered_collection_util.h"
+#include "mongo/db/shard_role/transaction_resources.h"
 #include "mongo/db/update/document_diff_calculator.h"
 #include "mongo/db/update/update_oplog_entry_serialization.h"
 
 #define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 namespace mongo::replicated_fast_count {
+namespace {
 
-boost::optional<SizeCountStore::Entry> SizeCountStore::read(OperationContext* opCtx,
-                                                            UUID uuid) const {
+BSONObj entryToContainerValue(const SizeCountStore::Entry& entry) {
+    return BSON(kValidAsOfKey << entry.timestamp << kMetadataKey
+                              << BSON(kCountKey << entry.count << kSizeKey << entry.size));
+}
+
+std::span<const char> bsonToSpan(const BSONObj& obj) {
+    return {obj.objdata(), static_cast<size_t>(obj.objsize())};
+}
+
+}  // namespace
+
+boost::optional<CollectionOrViewAcquisition> acquireFastCountCollectionForRead(
+    OperationContext* opCtx) {
+    CollectionOrViewAcquisition acquisition = acquireCollectionOrViewMaybeLockFree(
+        opCtx,
+        CollectionOrViewAcquisitionRequest::fromOpCtx(
+            opCtx,
+            NamespaceString::makeGlobalConfigCollection(NamespaceString::kReplicatedFastCountStore),
+            AcquisitionPrerequisites::OperationType::kRead));
+
+    if (acquisition.getCollectionPtr()) {
+        return acquisition;
+    }
+
+    return boost::none;
+}
+
+boost::optional<CollectionOrViewAcquisition> acquireFastCountCollectionForWrite(
+    OperationContext* opCtx) {
+    CollectionOrViewAcquisition acquisition = acquireCollectionOrView(
+        opCtx,
+        CollectionOrViewAcquisitionRequest::fromOpCtx(
+            opCtx,
+            NamespaceString::makeGlobalConfigCollection(NamespaceString::kReplicatedFastCountStore),
+            AcquisitionPrerequisites::OperationType::kWrite),
+        LockMode::MODE_IX);
+
+    if (acquisition.getCollectionPtr()) {
+        return acquisition;
+    }
+
+    return boost::none;
+}
+
+boost::optional<SizeCountStore::Entry> CollectionSizeCountStore::read(OperationContext* opCtx,
+                                                                      UUID uuid) const {
     const auto acquisition = acquireFastCountCollectionForRead(opCtx);
     if (!acquisition.has_value()) {
         // TODO(SERVER-123051): Revisit this.
@@ -60,13 +107,12 @@ boost::optional<SizeCountStore::Entry> SizeCountStore::read(OperationContext* op
     }
 
     const BSONObj& data = document.value();
-    return SizeCountStore::Entry{
-        .timestamp = data.getField(kValidAsOfKey).timestamp(),
-        .size = data.getField(kMetadataKey).Obj().getField(kSizeKey).Long(),
-        .count = data.getField(kMetadataKey).Obj().getField(kCountKey).Long()};
+    return SizeCountStore::Entry(data.getField(kValidAsOfKey).timestamp(),
+                                 data.getField(kMetadataKey).Obj().getField(kSizeKey).Long(),
+                                 data.getField(kMetadataKey).Obj().getField(kCountKey).Long());
 }
 
-void SizeCountStore::write(OperationContext* opCtx, UUID uuid, const Entry& entry) {
+void CollectionSizeCountStore::write(OperationContext* opCtx, UUID uuid, const Entry& entry) {
     const auto acquisition = acquireFastCountCollectionForWrite(opCtx).value();
     const CollectionPtr& coll = acquisition.getCollectionPtr();
     const RecordId rid =
@@ -99,7 +145,7 @@ void SizeCountStore::write(OperationContext* opCtx, UUID uuid, const Entry& entr
     }
 }
 
-void SizeCountStore::insert(OperationContext* opCtx, UUID uuid, const Entry& entry) {
+void CollectionSizeCountStore::insert(OperationContext* opCtx, UUID uuid, const Entry& entry) {
     const auto acquisition = acquireFastCountCollectionForWrite(opCtx).value();
     const CollectionPtr& coll = acquisition.getCollectionPtr();
 
@@ -110,7 +156,7 @@ void SizeCountStore::insert(OperationContext* opCtx, UUID uuid, const Entry& ent
         opCtx, coll, InsertStatement(newDoc), /*opDebug=*/nullptr));
 }
 
-void SizeCountStore::remove(OperationContext* opCtx, UUID uuid) {
+void CollectionSizeCountStore::remove(OperationContext* opCtx, UUID uuid) {
     const auto acquisition = acquireFastCountCollectionForWrite(opCtx).value();
     const RecordId rid =
         record_id_helpers::keyForDoc(BSON("_id" << uuid),
@@ -135,4 +181,72 @@ void SizeCountStore::remove(OperationContext* opCtx, UUID uuid) {
                                         rid,
                                         /*opDebug=*/nullptr);
 }
+
+std::span<const char> ContainerSizeCountStore::uuidToContainerKey(const UUID& uuid) {
+    auto cdr = uuid.toCDR();
+    return {reinterpret_cast<const char*>(cdr.data()), cdr.length()};
+}
+
+StringKeyedContainer& ContainerSizeCountStore::_getStringKeyedContainer() const {
+    auto container = _recordStore->getContainer();
+    massert(12566002,
+            "Expected replicated fast count metadata record store to hold a StringKeyedContainer",
+            std::holds_alternative<std::reference_wrapper<StringKeyedContainer>>(container));
+    return std::get<std::reference_wrapper<StringKeyedContainer>>(container);
+}
+
+boost::optional<SizeCountStore::Entry> ContainerSizeCountStore::read(OperationContext* opCtx,
+                                                                     UUID uuid) const {
+    auto& ru = *shard_role_details::getRecoveryUnit(opCtx);
+    auto& container = _getStringKeyedContainer();
+    auto cursor = container.getCursor(ru);
+    auto result = cursor->find(uuidToContainerKey(uuid));
+    if (!result) {
+        return boost::none;
+    }
+    return SizeCountStore::Entry(*result);
+}
+
+void ContainerSizeCountStore::write(OperationContext* opCtx, UUID uuid, const Entry& entry) {
+    auto& ru = *shard_role_details::getRecoveryUnit(opCtx);
+    auto& container = _getStringKeyedContainer();
+    auto val = entryToContainerValue(entry);
+    auto keySpan = uuidToContainerKey(uuid);
+    auto valSpan = bsonToSpan(val);
+
+    // Check if the key exists. Containers currently only support strict inserts or strict updates.
+    auto cursor = container.getCursor(ru);
+    if (cursor->find(keySpan)) {
+        massertStatusOK(container_write::update(opCtx, ru, container, keySpan, valSpan));
+    } else {
+        massertStatusOK(container_write::insert(
+            opCtx, ru, container, keySpan, valSpan, container::ExistingKeyPolicy::reject));
+    }
+}
+
+void ContainerSizeCountStore::insert(OperationContext* opCtx, UUID uuid, const Entry& entry) {
+    auto& ru = *shard_role_details::getRecoveryUnit(opCtx);
+    auto& container = _getStringKeyedContainer();
+    auto val = entryToContainerValue(entry);
+    massertStatusOK(container_write::insert(opCtx,
+                                            ru,
+                                            container,
+                                            uuidToContainerKey(uuid),
+                                            bsonToSpan(val),
+                                            container::ExistingKeyPolicy::reject));
+}
+
+void ContainerSizeCountStore::remove(OperationContext* opCtx, UUID uuid) {
+    auto& ru = *shard_role_details::getRecoveryUnit(opCtx);
+    auto& container = _getStringKeyedContainer();
+    auto status = container_write::remove(opCtx, ru, container, uuidToContainerKey(uuid));
+    if (!status.isOK()) {
+        LOGV2_WARNING(12566001,
+                      "Attempted to delete an entry for uuid {uuid} from the fast count "
+                      "container, but the operation failed.",
+                      "uuid"_attr = uuid.toString(),
+                      "error"_attr = status);
+    }
+}
+
 }  // namespace mongo::replicated_fast_count

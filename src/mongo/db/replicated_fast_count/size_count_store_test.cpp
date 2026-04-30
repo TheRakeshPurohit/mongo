@@ -29,39 +29,73 @@
 
 #include "mongo/db/replicated_fast_count/size_count_store.h"
 
-#include "mongo/db/dbhelpers.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/db/repl/storage_interface.h"
-#include "mongo/db/replicated_fast_count/replicated_fast_count_delta_utils.h"
 #include "mongo/db/replicated_fast_count/replicated_fast_count_init.h"
 #include "mongo/db/replicated_fast_count/replicated_fast_count_test_helpers.h"
-#include "mongo/db/shard_role/shard_catalog/catalog_raii.h"
 #include "mongo/db/shard_role/shard_catalog/catalog_test_fixture.h"
-#include "mongo/db/shard_role/shard_catalog/clustered_collection_util.h"
+#include "mongo/db/storage/kv/kv_engine.h"
+#include "mongo/db/storage/storage_engine.h"
 
 namespace mongo::replicated_fast_count {
 namespace {
 
-class SizeCountStoreTest : public CatalogTestFixture {};
+enum class Mode { kCollection, kContainer };
 
-TEST_F(SizeCountStoreTest, ReadReturnsNoneWhenCollectionDoesNotExist) {
-    const SizeCountStore store;
+// Runs each test case in both collection-backed and container-backed modes.
+class SizeCountStoreTest : public CatalogTestFixture, public ::testing::WithParamInterface<Mode> {
+protected:
+    void setUp() override {
+        CatalogTestFixture::setUp();
+        auto opCtx = operationContext();
+        if (GetParam() == Mode::kCollection) {
+            ASSERT_OK(createReplicatedFastCountCollection(storageInterface(), opCtx));
+            return;
+        }
 
+        _ffDurability = std::make_unique<RAIIServerParameterControllerForTest>(
+            "featureFlagReplicatedFastCountDurability", true);
+        _ffContainerWrites = std::make_unique<RAIIServerParameterControllerForTest>(
+            "featureFlagContainerWrites", true);
+
+        ASSERT_OK(createInternalFastCountContainers(opCtx,
+                                                    NamespaceString::kAdminCommandNamespace,
+                                                    ident::kFastCountMetadataStore,
+                                                    KeyFormat::String,
+                                                    ident::kFastCountMetadataStoreTimestamps,
+                                                    KeyFormat::Long,
+                                                    /*writeToOplog=*/false));
+
+        auto* engine = opCtx->getServiceContext()->getStorageEngine()->getEngine();
+        _recordStore = engine->getRecordStore(opCtx,
+                                              NamespaceString::kAdminCommandNamespace,
+                                              ident::kFastCountMetadataStore,
+                                              RecordStore::Options{.keyFormat = KeyFormat::String},
+                                              /*uuid=*/boost::none);
+    }
+
+    std::unique_ptr<SizeCountStore> makeStore() {
+        if (GetParam() == Mode::kCollection) {
+            return std::make_unique<CollectionSizeCountStore>();
+        }
+        return std::make_unique<ContainerSizeCountStore>(std::move(_recordStore));
+    }
+
+    std::unique_ptr<RAIIServerParameterControllerForTest> _ffDurability;
+    std::unique_ptr<RAIIServerParameterControllerForTest> _ffContainerWrites;
+    std::unique_ptr<RecordStore> _recordStore;
+};
+
+TEST_P(SizeCountStoreTest, ReadReturnsNoneWhenEmpty) {
+    auto storePtr = makeStore();
+    auto& store = *storePtr;
     EXPECT_FALSE(store.read(operationContext(), UUID::gen()).has_value());
 }
 
-TEST_F(SizeCountStoreTest, ReadReturnsNoneWhenDocumentDoesNotExist) {
-    ASSERT_OK(createReplicatedFastCountCollection(storageInterface(), operationContext()));
-    const SizeCountStore store;
-
-    EXPECT_FALSE(store.read(operationContext(), UUID::gen()).has_value());
-}
-
-TEST_F(SizeCountStoreTest, ReadWriteRoundTripNewEntry) {
-    ASSERT_OK(createReplicatedFastCountCollection(storageInterface(), operationContext()));
-    SizeCountStore store;
+TEST_P(SizeCountStoreTest, ReadWriteRoundTripNewEntry) {
+    auto storePtr = makeStore();
+    auto& store = *storePtr;
     const UUID uuid = UUID::gen();
-    const SizeCountStore::Entry entry{.timestamp = Timestamp(10, 1), .size = 42, .count = 7};
+    const SizeCountStore::Entry entry(Timestamp(10, 1), 42, 7);
 
     test_helpers::insertSizeCountEntry(operationContext(), store, uuid, entry);
 
@@ -70,17 +104,15 @@ TEST_F(SizeCountStoreTest, ReadWriteRoundTripNewEntry) {
     EXPECT_EQ(entry, *result);
 }
 
-TEST_F(SizeCountStoreTest, WriteUpdateExistingEntry) {
-    ASSERT_OK(createReplicatedFastCountCollection(storageInterface(), operationContext()));
-    SizeCountStore store;
+TEST_P(SizeCountStoreTest, WriteUpdateExistingEntry) {
+    auto storePtr = makeStore();
+    auto& store = *storePtr;
     const UUID uuid = UUID::gen();
-    const SizeCountStore::Entry initialEntry{.timestamp = Timestamp(10, 1), .size = 42, .count = 7};
+    const SizeCountStore::Entry initialEntry(Timestamp(10, 1), 42, 7);
     test_helpers::insertSizeCountEntry(operationContext(), store, uuid, initialEntry);
 
-    // Update initial entry.
-    const SizeCountStore::Entry updatedEntry{.timestamp = initialEntry.timestamp + 1,
-                                             .size = initialEntry.size - 2,
-                                             .count = initialEntry.count - 1};
+    const SizeCountStore::Entry updatedEntry(
+        initialEntry.timestamp + 1, initialEntry.size - 2, initialEntry.count - 1);
     ASSERT_NE(initialEntry, updatedEntry);
 
     test_helpers::insertSizeCountEntry(operationContext(), store, uuid, updatedEntry);
@@ -89,13 +121,13 @@ TEST_F(SizeCountStoreTest, WriteUpdateExistingEntry) {
     EXPECT_EQ(updatedEntry, *result);
 }
 
-TEST_F(SizeCountStoreTest, ReadWriteTwoEntries) {
-    ASSERT_OK(createReplicatedFastCountCollection(storageInterface(), operationContext()));
-    SizeCountStore store;
+TEST_P(SizeCountStoreTest, ReadWriteTwoEntries) {
+    auto storePtr = makeStore();
+    auto& store = *storePtr;
     const UUID uuid0 = UUID::gen();
     const UUID uuid1 = UUID::gen();
-    const SizeCountStore::Entry entry0{.timestamp = Timestamp(10, 1), .size = 42, .count = 7};
-    const SizeCountStore::Entry entry1{.timestamp = Timestamp(20, 2), .size = 100, .count = 3};
+    const SizeCountStore::Entry entry0(Timestamp(10, 1), 42, 7);
+    const SizeCountStore::Entry entry1(Timestamp(20, 2), 100, 3);
 
     test_helpers::insertSizeCountEntry(operationContext(), store, uuid0, entry0);
     test_helpers::insertSizeCountEntry(operationContext(), store, uuid1, entry1);
@@ -109,19 +141,19 @@ TEST_F(SizeCountStoreTest, ReadWriteTwoEntries) {
     EXPECT_EQ(entry1, *result1);
 }
 
-TEST_F(SizeCountStoreTest, WriterUpdateToOneOfTwoEntries) {
-    ASSERT_OK(createReplicatedFastCountCollection(storageInterface(), operationContext()));
-    SizeCountStore store;
+TEST_P(SizeCountStoreTest, WriteUpdateToOneOfTwoEntries) {
+    auto storePtr = makeStore();
+    auto& store = *storePtr;
     const UUID uuid0 = UUID::gen();
     const UUID uuid1 = UUID::gen();
-    const SizeCountStore::Entry entry0{.timestamp = Timestamp(10, 1), .size = 42, .count = 7};
-    const SizeCountStore::Entry entry1{.timestamp = Timestamp(20, 2), .size = 100, .count = 3};
+    const SizeCountStore::Entry entry0(Timestamp(10, 1), 42, 7);
+    const SizeCountStore::Entry entry1(Timestamp(20, 2), 100, 3);
 
     test_helpers::insertSizeCountEntry(operationContext(), store, uuid0, entry0);
     test_helpers::insertSizeCountEntry(operationContext(), store, uuid1, entry1);
 
-    const SizeCountStore::Entry updatedEntry0{
-        .timestamp = entry0.timestamp + 1, .size = entry0.size + 10, .count = entry0.count + 2};
+    const SizeCountStore::Entry updatedEntry0(
+        entry0.timestamp + 1, entry0.size + 10, entry0.count + 2);
     test_helpers::insertSizeCountEntry(operationContext(), store, uuid0, updatedEntry0);
 
     const auto result0 = store.read(operationContext(), uuid0);
@@ -133,16 +165,15 @@ TEST_F(SizeCountStoreTest, WriterUpdateToOneOfTwoEntries) {
     EXPECT_EQ(entry1, *result1);
 }
 
-TEST_F(SizeCountStoreTest, InsertAddsEntry) {
-    ASSERT_OK(createReplicatedFastCountCollection(storageInterface(), operationContext()));
-    SizeCountStore store;
+TEST_P(SizeCountStoreTest, InsertAddsEntry) {
+    auto storePtr = makeStore();
+    auto& store = *storePtr;
     const UUID uuid = UUID::gen();
-    const SizeCountStore::Entry entry{.timestamp = Timestamp(10, 1), .size = 42, .count = 7};
+    const SizeCountStore::Entry entry(Timestamp(10, 1), 42, 7);
 
     auto opCtx = operationContext();
-
     WriteUnitOfWork wuow{opCtx};
-    store.insert(operationContext(), uuid, entry);
+    store.insert(opCtx, uuid, entry);
     wuow.commit();
 
     const auto result = store.read(operationContext(), uuid);
@@ -150,22 +181,22 @@ TEST_F(SizeCountStoreTest, InsertAddsEntry) {
     EXPECT_EQ(entry, *result);
 }
 
-TEST_F(SizeCountStoreTest, DoubleInsertFails) {
-    ASSERT_OK(createReplicatedFastCountCollection(storageInterface(), operationContext()));
-    SizeCountStore store;
+TEST_P(SizeCountStoreTest, DoubleInsertFails) {
+    auto storePtr = makeStore();
+    auto& store = *storePtr;
     const UUID uuid = UUID::gen();
-    const SizeCountStore::Entry entry{.timestamp = Timestamp(10, 1), .size = 42, .count = 7};
+    const SizeCountStore::Entry entry(Timestamp(10, 1), 42, 7);
 
     auto opCtx = operationContext();
     {
         WriteUnitOfWork wuow{opCtx};
-        store.insert(operationContext(), uuid, entry);
+        store.insert(opCtx, uuid, entry);
         wuow.commit();
     }
 
     {
         WriteUnitOfWork wuow{opCtx};
-        ASSERT_THROWS(store.insert(operationContext(), uuid, entry), DBException);
+        ASSERT_THROWS(store.insert(opCtx, uuid, entry), DBException);
     }
     // Initial entry should be unchanged.
     const auto result = store.read(operationContext(), uuid);
@@ -173,17 +204,17 @@ TEST_F(SizeCountStoreTest, DoubleInsertFails) {
     EXPECT_EQ(entry, *result);
 }
 
-TEST_F(SizeCountStoreTest, RemoveRemovesEntry) {
-    ASSERT_OK(createReplicatedFastCountCollection(storageInterface(), operationContext()));
-    SizeCountStore store;
+TEST_P(SizeCountStoreTest, RemoveRemovesEntry) {
+    auto storePtr = makeStore();
+    auto& store = *storePtr;
     const UUID uuid = UUID::gen();
-    const SizeCountStore::Entry entry{.timestamp = Timestamp(10, 1), .size = 42, .count = 7};
+    const SizeCountStore::Entry entry(Timestamp(10, 1), 42, 7);
 
     auto opCtx = operationContext();
 
     {
         WriteUnitOfWork wuow{opCtx};
-        store.insert(operationContext(), uuid, entry);
+        store.insert(opCtx, uuid, entry);
         wuow.commit();
     }
 
@@ -193,25 +224,43 @@ TEST_F(SizeCountStoreTest, RemoveRemovesEntry) {
 
     {
         WriteUnitOfWork wuow{opCtx};
-        store.remove(operationContext(), uuid);
+        store.remove(opCtx, uuid);
         wuow.commit();
     }
 
     EXPECT_FALSE(store.read(operationContext(), uuid).has_value());
 }
 
-TEST_F(SizeCountStoreTest, RemoveNonExistentEntryIsNoOp) {
-    ASSERT_OK(createReplicatedFastCountCollection(storageInterface(), operationContext()));
-    SizeCountStore store;
+TEST_P(SizeCountStoreTest, RemoveNonExistentEntryIsNoOp) {
+    auto storePtr = makeStore();
+    auto& store = *storePtr;
     const UUID uuid = UUID::gen();
 
     auto opCtx = operationContext();
     {
         WriteUnitOfWork wuow{opCtx};
-        store.remove(operationContext(), uuid);
+        store.remove(opCtx, uuid);
         wuow.commit();
     }
     EXPECT_FALSE(store.read(operationContext(), uuid).has_value());
 }
+
+INSTANTIATE_TEST_SUITE_P(,
+                         SizeCountStoreTest,
+                         ::testing::Values(Mode::kCollection, Mode::kContainer),
+                         [](const ::testing::TestParamInfo<Mode>& info) {
+                             return info.param == Mode::kCollection ? "Collection" : "Container";
+                         });
+
+// Collection-only case: container mode provisions must pass an existing RecordStore to the
+// SizeCountTimestampStore constructor, so there is no equivalent "backing storage does not exist"
+// scenario to exercise.
+class SizeCountStoreCollectionModeTest : public CatalogTestFixture {};
+
+TEST_F(SizeCountStoreCollectionModeTest, ReadReturnsNoneWhenCollectionDoesNotExist) {
+    const CollectionSizeCountStore store;
+    EXPECT_FALSE(store.read(operationContext(), UUID::gen()).has_value());
+}
+
 }  // namespace
 }  // namespace mongo::replicated_fast_count

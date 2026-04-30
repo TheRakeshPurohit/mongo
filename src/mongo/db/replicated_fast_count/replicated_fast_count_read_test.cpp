@@ -129,8 +129,8 @@ protected:
 };
 
 TEST_F(ReadLatestTest, UuidNotFoundInSizeCountStore) {
-    const SizeCountStore sizeCountStore;
-    const SizeCountTimestampStore timestampStore;
+    const CollectionSizeCountStore sizeCountStore;
+    const CollectionSizeCountTimestampStore timestampStore;
     OplogCursorMock cursor(std::list<repl::OplogEntry>{});
     const UUID uuid = UUID::gen();
 
@@ -139,40 +139,32 @@ TEST_F(ReadLatestTest, UuidNotFoundInSizeCountStore) {
 }
 
 TEST_F(ReadLatestTest, UuidNotFoundInSizeCountTimestampStore) {
-    SizeCountStore sizeCountStore;
-    const SizeCountTimestampStore timestampStore;
+    CollectionSizeCountStore sizeCountStore;
+    const CollectionSizeCountTimestampStore timestampStore;
     OplogCursorMock cursor(std::list<repl::OplogEntry>{});
     const UUID uuid = UUID::gen();
 
-    test_helpers::insertSizeCountEntry(operationContext(),
-                                       sizeCountStore,
-                                       uuid,
-                                       {
-                                           .timestamp = Timestamp(0, 1),
-                                           .size = 1,
-                                           .count = 10,
-                                       });
+    test_helpers::insertSizeCountEntry(
+        operationContext(), sizeCountStore, uuid, SizeCountStore::Entry(Timestamp(0, 1), 1, 10));
     EXPECT_EQ(readLatest(operationContext(), sizeCountStore, timestampStore, cursor, uuid),
               CollectionSizeCount({.size = 1, .count = 10}));
 }
 
 TEST_F(ReadLatestTest, EmptyOplog) {
-    SizeCountStore sizeCountStore;
-    const SizeCountTimestampStore timestampStore;
+    CollectionSizeCountStore sizeCountStore;
+    const CollectionSizeCountTimestampStore timestampStore;
     OplogCursorMock cursor(std::list<repl::OplogEntry>{});
     const UUID uuid = UUID::gen();
 
-    test_helpers::insertSizeCountEntry(operationContext(),
-                                       sizeCountStore,
-                                       uuid,
-                                       {.timestamp = Timestamp::min(), .size = 5, .count = 1});
+    test_helpers::insertSizeCountEntry(
+        operationContext(), sizeCountStore, uuid, SizeCountStore::Entry(Timestamp::min(), 5, 1));
     EXPECT_EQ(readLatest(operationContext(), sizeCountStore, timestampStore, cursor, uuid),
               CollectionSizeCount({.size = 5, .count = 1}));
 }
 
 TEST_F(ReadLatestTest, UuidNotFoundInNonEmptyOplog) {
-    SizeCountStore sizeCountStore;
-    const SizeCountTimestampStore timestampStore;
+    CollectionSizeCountStore sizeCountStore;
+    const CollectionSizeCountTimestampStore timestampStore;
 
     const std::list<repl::OplogEntry> entries{
         test_helpers::makeOplogEntry(
@@ -182,18 +174,16 @@ TEST_F(ReadLatestTest, UuidNotFoundInNonEmptyOplog) {
 
     // We assume this UUID != collA.uuid, so the oplog entry should be ignored.
     const UUID uuid = UUID::gen();
-    test_helpers::insertSizeCountEntry(operationContext(),
-                                       sizeCountStore,
-                                       uuid,
-                                       {.timestamp = Timestamp::min(), .size = 5, .count = 1});
+    test_helpers::insertSizeCountEntry(
+        operationContext(), sizeCountStore, uuid, SizeCountStore::Entry(Timestamp::min(), 5, 1));
 
     EXPECT_EQ(readLatest(operationContext(), sizeCountStore, timestampStore, cursor, uuid),
               CollectionSizeCount({.size = 5, .count = 1}));
 }
 
 TEST_F(ReadLatestTest, TimestampNotFoundInNonEmptyOplog) {
-    SizeCountStore sizeCountStore;
-    SizeCountTimestampStore timestampStore;
+    CollectionSizeCountStore sizeCountStore;
+    CollectionSizeCountTimestampStore timestampStore;
 
     const std::list<repl::OplogEntry> entries{
         test_helpers::makeOplogEntry(
@@ -204,7 +194,7 @@ TEST_F(ReadLatestTest, TimestampNotFoundInNonEmptyOplog) {
     test_helpers::insertSizeCountEntry(operationContext(),
                                        sizeCountStore,
                                        collA.uuid,
-                                       {.timestamp = Timestamp::min(), .size = 5, .count = 1});
+                                       SizeCountStore::Entry(Timestamp::min(), 5, 1));
 
     // Timestamp >= (1, 1) should skip all oplog entries since oplog traversal begins *after* the
     // timestamp store timestamp.
@@ -214,8 +204,8 @@ TEST_F(ReadLatestTest, TimestampNotFoundInNonEmptyOplog) {
 }
 
 TEST_F(ReadLatestTest, UuidFoundInOplog) {
-    SizeCountStore sizeCountStore;
-    SizeCountTimestampStore timestampStore;
+    CollectionSizeCountStore sizeCountStore;
+    CollectionSizeCountTimestampStore timestampStore;
 
     const std::list<repl::OplogEntry> entries{
         test_helpers::makeOplogEntry(
@@ -230,7 +220,7 @@ TEST_F(ReadLatestTest, UuidFoundInOplog) {
     test_helpers::insertSizeCountEntry(operationContext(),
                                        sizeCountStore,
                                        collA.uuid,
-                                       {.timestamp = Timestamp::min(), .size = 5, .count = 1});
+                                       SizeCountStore::Entry(Timestamp::min(), 5, 1));
     test_helpers::insertSizeCountTimestamp(operationContext(), timestampStore, Timestamp::min());
 
     EXPECT_EQ(readLatest(operationContext(), sizeCountStore, timestampStore, cursor, collA.uuid),
@@ -238,8 +228,8 @@ TEST_F(ReadLatestTest, UuidFoundInOplog) {
 }
 
 TEST_F(ReadLatestTest, UuidFoundInOplogAfterSizeCountStoreTimestamp) {
-    SizeCountStore sizeCountStore;
-    SizeCountTimestampStore timestampStore;
+    CollectionSizeCountStore sizeCountStore;
+    CollectionSizeCountTimestampStore timestampStore;
 
     const std::list<repl::OplogEntry> entries{
         test_helpers::makeOplogEntry(
@@ -252,7 +242,7 @@ TEST_F(ReadLatestTest, UuidFoundInOplogAfterSizeCountStoreTimestamp) {
     test_helpers::insertSizeCountEntry(operationContext(),
                                        sizeCountStore,
                                        collA.uuid,
-                                       {.timestamp = Timestamp(1, 1), .size = 5, .count = 1});
+                                       SizeCountStore::Entry(Timestamp(1, 1), 5, 1));
     test_helpers::insertSizeCountTimestamp(operationContext(), timestampStore, Timestamp::min());
 
     EXPECT_EQ(readLatest(operationContext(), sizeCountStore, timestampStore, cursor, collA.uuid),
@@ -260,8 +250,8 @@ TEST_F(ReadLatestTest, UuidFoundInOplogAfterSizeCountStoreTimestamp) {
 }
 
 TEST_F(ReadLatestTest, UuidFoundInOplogAfterTimestampStoreTimestamp) {
-    SizeCountStore sizeCountStore;
-    SizeCountTimestampStore timestampStore;
+    CollectionSizeCountStore sizeCountStore;
+    CollectionSizeCountTimestampStore timestampStore;
 
     const std::list<repl::OplogEntry> entries{
         test_helpers::makeOplogEntry(
@@ -274,7 +264,7 @@ TEST_F(ReadLatestTest, UuidFoundInOplogAfterTimestampStoreTimestamp) {
     test_helpers::insertSizeCountEntry(operationContext(),
                                        sizeCountStore,
                                        collA.uuid,
-                                       {.timestamp = Timestamp::min(), .size = 5, .count = 1});
+                                       SizeCountStore::Entry(Timestamp::min(), 5, 1));
     test_helpers::insertSizeCountTimestamp(operationContext(), timestampStore, Timestamp(1, 1));
 
     EXPECT_EQ(readLatest(operationContext(), sizeCountStore, timestampStore, cursor, collA.uuid),
@@ -282,8 +272,8 @@ TEST_F(ReadLatestTest, UuidFoundInOplogAfterTimestampStoreTimestamp) {
 }
 
 TEST_F(ReadLatestTest, UuidFoundInOplogWithInterleavedEntries) {
-    SizeCountStore sizeCountStore;
-    SizeCountTimestampStore timestampStore;
+    CollectionSizeCountStore sizeCountStore;
+    CollectionSizeCountTimestampStore timestampStore;
 
     const std::list<repl::OplogEntry> entries{
         test_helpers::makeOplogEntry(
@@ -302,7 +292,7 @@ TEST_F(ReadLatestTest, UuidFoundInOplogWithInterleavedEntries) {
     test_helpers::insertSizeCountEntry(operationContext(),
                                        sizeCountStore,
                                        collA.uuid,
-                                       {.timestamp = Timestamp::min(), .size = 5, .count = 1});
+                                       SizeCountStore::Entry(Timestamp::min(), 5, 1));
     test_helpers::insertSizeCountTimestamp(operationContext(), timestampStore, Timestamp::min());
 
     // Only collA's deltas should be aggregated.
@@ -311,8 +301,8 @@ TEST_F(ReadLatestTest, UuidFoundInOplogWithInterleavedEntries) {
 }
 
 TEST_F(ReadLatestTest, OnlyUpdateOpsResultInZeroCountDelta) {
-    SizeCountStore sizeCountStore;
-    SizeCountTimestampStore timestampStore;
+    CollectionSizeCountStore sizeCountStore;
+    CollectionSizeCountTimestampStore timestampStore;
 
     const std::list<repl::OplogEntry> entries{
         test_helpers::makeOplogEntry(
@@ -327,7 +317,7 @@ TEST_F(ReadLatestTest, OnlyUpdateOpsResultInZeroCountDelta) {
     test_helpers::insertSizeCountEntry(operationContext(),
                                        sizeCountStore,
                                        collA.uuid,
-                                       {.timestamp = Timestamp::min(), .size = 100, .count = 5});
+                                       SizeCountStore::Entry(Timestamp::min(), 100, 5));
     test_helpers::insertSizeCountTimestamp(operationContext(), timestampStore, Timestamp::min());
 
     // Updates contribute size deltas but zero count delta, so count stays the same.
@@ -351,21 +341,21 @@ protected:
 };
 
 TEST_F(ReadPersistedTest, UuidNotFoundInSizeCountStore) {
-    const SizeCountStore sizeCountStore;
+    const CollectionSizeCountStore sizeCountStore;
     EXPECT_THROW(std::ignore = readPersisted(operationContext(), sizeCountStore, UUID::gen()),
                  DBException);
 }
 
 TEST_F(ReadPersistedTest, UuidFoundInSizeCountStore) {
-    SizeCountStore sizeCountStore;
+    CollectionSizeCountStore sizeCountStore;
     test_helpers::insertSizeCountEntry(operationContext(),
                                        sizeCountStore,
                                        collA.uuid,
-                                       {.timestamp = Timestamp(1, 1), .size = 5, .count = 1});
+                                       SizeCountStore::Entry(Timestamp(1, 1), 5, 1));
     test_helpers::insertSizeCountEntry(operationContext(),
                                        sizeCountStore,
                                        collB.uuid,
-                                       {.timestamp = Timestamp(1, 1), .size = 10, .count = 2});
+                                       SizeCountStore::Entry(Timestamp(1, 1), 10, 2));
     EXPECT_EQ(readPersisted(operationContext(), sizeCountStore, collA.uuid),
               CollectionSizeCount({.size = 5, .count = 1}));
 }
