@@ -85,6 +85,7 @@ mongo_cc_fuzztest(
         ":path_arrayness",
         "//src/mongo/db/index:index_access_method",
         "//src/mongo/db/pipeline:expression_context_for_test",
+        "//src/mongo/db/query:query_fcv_environment_for_test",
     ],
 )
 
