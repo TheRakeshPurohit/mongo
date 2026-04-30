@@ -1288,36 +1288,8 @@ CanonicalQuery::QueryShapeString encodePipeline(
     return base64::encode(StringData(bufBuilder.buf(), bufBuilder.len()));
 }
 
-CanonicalQuery::QueryShapeString encodeClassic(const CanonicalQuery& cq) {
-    StringBuilder keyBuilder;
-    encodeKeyForMatch(cq.getPrimaryMatchExpression(), &keyBuilder);
-    encodeKeyForSort(cq.getFindCommandRequest().getSort(), &keyBuilder);
-    encodeKeyForProj(cq.getProj(), &keyBuilder);
-    encodeCollation(cq.getCollator(), &keyBuilder);
-    encodeKeyForDistinct(cq.getDistinct(),
-                         &keyBuilder,
-                         cq.getExpCtx()->isFeatureFlagShardFilteringDistinctScanEnabled());
-
-
-    // The apiStrict flag can cause the query to see different set of indexes. For example, all
-    // sparse indexes will be ignored with apiStrict is used.
-    const bool apiStrict =
-        cq.getOpCtx() && APIParameters::get(cq.getOpCtx()).getAPIStrict().value_or(false);
-    keyBuilder << (apiStrict ? "t" : "f");
-
-    // In the deferred get_executor, we cannot encode the engine choice because it is not known
-    // during query optimization. We only encode whether the subplanner is used, to avoid the case
-    // under 'o' below, where cache entries created during subplanning do not have meaningful
-    // works/reads values.
-    if (MONGO_unlikely(feature_flags::gFeatureFlagGetExecutorDeferredEngineChoice.isEnabled())) {
-        if (cq.forSubPlanner()) {
-            keyBuilder << "s";  // Subplanning code path
-        } else {
-            keyBuilder << "r";  // Regular code path
-        }
-        return keyBuilder.str();
-    }
-
+void encodeLegacyGetExecutorSubplanningData(const CanonicalQuery& cq, StringBuilder* keyBuilder) {
+    tassert(12499601, "Expected keyBuilder to be non-null", keyBuilder);
     // Encode a flag with three possible values:
     // 1 ('c'): The cache entry is intended to use the classic code path completely. In this case
     //            the entry stores 'works.'
@@ -1343,14 +1315,54 @@ CanonicalQuery::QueryShapeString encodeClassic(const CanonicalQuery& cq) {
 
     if (cq.isSbeCompatible()) {
         if (cq.forSubPlanner()) {
-            keyBuilder << "o";  // Case 3: 'o' for "OR."
+            *keyBuilder << "o";  // Case 3: 'o' for "OR."
         } else {
-            keyBuilder << "s";  // Case 2: 's' for "SBE."
+            *keyBuilder << "s";  // Case 2: 's' for "SBE."
         }
     } else {
-        keyBuilder << "c";  // Case 1: 'c' for "classic."
+        *keyBuilder << "c";  // Case 1: 'c' for "classic."
     }
+}
 
+void encodeDeferredGetExecutorSubplanningData(const CanonicalQuery& cq, StringBuilder* keyBuilder) {
+    tassert(12499600, "Expected keyBuilder to be non-null", keyBuilder);
+    // In the deferred get_executor, we cannot encode the engine choice because it is not known
+    // during query optimization. We only encode whether the subplanner is used, to avoid the case
+    // where cache entries created during subplanning do not have meaningful works/reads values.
+    if (cq.forSubPlanner()) {
+        *keyBuilder << "s";  // Subplanning code path
+    } else {
+        *keyBuilder << "r";  // Regular code path
+    }
+}
+
+CanonicalQuery::QueryShapeString encodeClassic(const CanonicalQuery& cq) {
+    StringBuilder keyBuilder;
+    encodeKeyForMatch(cq.getPrimaryMatchExpression(), &keyBuilder);
+    encodeKeyForSort(cq.getFindCommandRequest().getSort(), &keyBuilder);
+    encodeKeyForProj(cq.getProj(), &keyBuilder);
+    encodeCollation(cq.getCollator(), &keyBuilder);
+    encodeKeyForDistinct(cq.getDistinct(),
+                         &keyBuilder,
+                         cq.getExpCtx()->isFeatureFlagShardFilteringDistinctScanEnabled());
+
+
+    // The apiStrict flag can cause the query to see different set of indexes. For example, all
+    // sparse indexes will be ignored with apiStrict is used.
+    const bool apiStrict =
+        cq.getOpCtx() && APIParameters::get(cq.getOpCtx()).getAPIStrict().value_or(false);
+    keyBuilder << (apiStrict ? "t" : "f");
+
+    // Encode the deferred engine selection feature flag so that cache entries cannot be shared when
+    // the flag is changed. This could lead to unpredictable scenarios.
+    const bool deferredGetExecutorEnabled =
+        feature_flags::gFeatureFlagGetExecutorDeferredEngineChoice.isEnabled();
+    keyBuilder << (deferredGetExecutorEnabled ? "t" : "f");
+    if (MONGO_unlikely(deferredGetExecutorEnabled)) {
+        encodeDeferredGetExecutorSubplanningData(cq, &keyBuilder);
+    } else {
+        encodeLegacyGetExecutorSubplanningData(cq, &keyBuilder);
+    }
     return keyBuilder.str();
 }
 
