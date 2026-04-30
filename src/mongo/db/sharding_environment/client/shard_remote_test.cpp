@@ -561,7 +561,7 @@ TEST_F(ShardRetryabilityTest, RetryableErrorRemoteNotIdempotent) {
                                                 retryableWriteLabel,
                                                 Shard::RetryPolicy::kNotIdempotent));
 
-    ASSERT(_shard->remoteIsRetriableError(
+    ASSERT_FALSE(_shard->remoteIsRetriableError(
         Status{ErrorCodes::PrimarySteppedDown, "error"}, {}, Shard::RetryPolicy::kNotIdempotent));
 }
 
