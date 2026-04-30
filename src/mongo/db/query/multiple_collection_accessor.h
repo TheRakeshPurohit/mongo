@@ -165,7 +165,5 @@ private:
     // $lookup against a foreign view or a non-local collection is not currently supported
     // by the execution subsystem.
     bool _isAnySecondaryNamespaceAViewOrNotFullyLocal = false;
-
-    OperationContext* _opCtx = nullptr;
 };
 }  // namespace mongo
