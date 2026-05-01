@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-Script that opens a PR using a bot to update profile data links for PGO and BOLT.
+Script that opens a PR using a bot to update profile data links for PGO, CSPGO, and BOLT.
 This updates profiling_data.bzl and is reliant on the formatting of it to not change.
-The script always expects 3 links, one to the bolt data, one to the gcc data, and one to the
-clang data. It always expects one of either clang or gcc data to not actually contain data
-because we only want to update one, however the build will work at updating either of them.
+
+Two invocation modes:
+  1. PGO + BOLT (original): 3 positional URLs (bolt, clang_pgo, gcc_pgo). Expects exactly
+     one of clang_pgo / gcc_pgo to be populated so only one is updated at a time.
+  2. CSPGO (--cspgo_url): updates only the CSPGO URL + checksum. Orthogonal to the PGO/BOLT
+     flow;
 """
 
 import argparse
@@ -105,6 +108,16 @@ def update_gcc_pgo_info(file_content: str, new_url: str, new_checksum: str) -> s
     gcc_pgo_checksum_tag = "DEFAULT_GCC_PGO_DATA_CHECKSUM"
     updated_text = replace_quoted_text_in_tagged_line(file_content, gcc_pgo_url_tag, new_url)
     return replace_quoted_text_in_tagged_line(updated_text, gcc_pgo_checksum_tag, new_checksum)
+
+
+def update_clang_cspgo_info(file_content: str, new_url: str, new_checksum: str) -> str:
+    """
+    Updates the clang cspgo url and checksum lines in a file
+    """
+    clang_cspgo_url_tag = "DEFAULT_CLANG_CSPGO_DATA_URL"
+    clang_cspgo_checksum_tag = "DEFAULT_CLANG_CSPGO_DATA_CHECKSUM"
+    updated_text = replace_quoted_text_in_tagged_line(file_content, clang_cspgo_url_tag, new_url)
+    return replace_quoted_text_in_tagged_line(updated_text, clang_cspgo_checksum_tag, new_checksum)
 
 
 def create_backport_ticket(version: str):
@@ -234,15 +247,50 @@ def create_profile_data_pr(repo, args, target_branch, new_branch):
     create_pr(target_branch, new_branch, profiling_data_file, profiling_file_updated_text)
 
 
+def create_cspgo_pr(repo, cspgo_url: str, target_branch: str, new_branch: str):
+    """
+    Download the cspgo profdata, compute its checksum, and open a PR updating only
+    the CSPGO url/checksum in profiling_data.bzl.
+    """
+    temp_dir = tempfile.mkdtemp()
+    cspgo_file = os.path.join(temp_dir, "clang_cspgo.profdata")
+
+    if not download_file(cspgo_url, cspgo_file):
+        print(f"CSPGO file did not exist at {cspgo_url}. Not creating PR.")
+        sys.exit(0)
+
+    profiling_data_file = repo.get_contents(
+        PROFILE_DATA_FILE_PATH, ref=f"refs/heads/{target_branch}"
+    )
+    profiling_data_file_content = profiling_data_file.decoded_content.decode()
+
+    profiling_file_updated_text = update_clang_cspgo_info(
+        profiling_data_file_content, cspgo_url, compute_sha256(cspgo_file)
+    )
+
+    create_pr(target_branch, new_branch, profiling_data_file, profiling_file_updated_text)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="This script uses bolt file url, clang pgo file url and gcc pgo file url to create a PR updating the links to these files."
+        description="This script uses bolt file url, clang pgo file url and gcc pgo file url to create a PR updating the links to these files. Pass --cspgo_url instead to update only the CSPGO entries."
     )
-    parser.add_argument("bolt_url", help="URL that BOLT data was uploaded to.")
-    parser.add_argument("clang_pgo_url", help="URL that clang pgo data was uploaded to.")
-    parser.add_argument("gcc_pgo_url", help="URL that gcc pgo data was uploaded to.")
+    parser.add_argument(
+        "bolt_url", nargs="?", help="URL that BOLT data was uploaded to.", default=None
+    )
+    parser.add_argument(
+        "clang_pgo_url", nargs="?", help="URL that clang pgo data was uploaded to.", default=None
+    )
+    parser.add_argument(
+        "gcc_pgo_url", nargs="?", help="URL that gcc pgo data was uploaded to.", default=None
+    )
     parser.add_argument("target_branch", help="The branch you want to create a PR into.")
     parser.add_argument("new_branch", help="The new branch to create a PR from.")
+    parser.add_argument(
+        "--cspgo_url",
+        help="URL that clang cspgo data was uploaded to. When set, only the CSPGO entries are updated.",
+        default=None,
+    )
     parser.add_argument(
         "--app_id", help="App ID used for authentication.", default=os.getenv("MONGO_PR_BOT_APP_ID")
     )
@@ -256,9 +304,16 @@ if __name__ == "__main__":
         parser.error(
             "Must define --app-id or env MONGO_PR_BOT_APP_ID and --private-key or env MONGO_PR_BOT_PRIVATE_KEY."
         )
+    if not args.cspgo_url and not (args.bolt_url and args.clang_pgo_url and args.gcc_pgo_url):
+        parser.error(
+            "Must provide either --cspgo_url for a CSPGO-only PR, or bolt_url/clang_pgo_url/gcc_pgo_url positional args for a PGO+BOLT PR."
+        )
     # Replace spaces with newline, if applicable
     private_key = (
         args.private_key[:31] + args.private_key[31:-29].replace(" ", "\n") + args.private_key[-29:]
     )
     repo = get_mongo_repository(args.app_id, private_key)
-    create_profile_data_pr(repo, args, args.target_branch, args.new_branch)
+    if args.cspgo_url:
+        create_cspgo_pr(repo, args.cspgo_url, args.target_branch, args.new_branch)
+    else:
+        create_profile_data_pr(repo, args, args.target_branch, args.new_branch)

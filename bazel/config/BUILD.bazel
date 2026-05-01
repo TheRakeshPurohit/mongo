@@ -17,6 +17,8 @@ load(
     "compress_debug_compile",
     "coverage",
     "create_dwp",
+    "cspgo_profile_generate",
+    "cspgo_profile_use",
     "dbg",
     "dbg_level",
     "debug_symbols",
@@ -2446,6 +2448,75 @@ selects.config_setting_group(
 )
 
 # --------------------------------------
+# cspgo_profile_generate options
+# --------------------------------------
+
+cspgo_profile_generate(
+    name = "cspgo_profile_generate",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "cspgo_profile_generate_enabled",
+    flag_values = {
+        "//bazel/config:cspgo_profile_generate": "True",
+    },
+)
+
+config_setting(
+    name = "cspgo_profile_generate_disabled",
+    flag_values = {
+        "//bazel/config:cspgo_profile_generate": "False",
+    },
+)
+
+# CSPGO generate requires stage-1 PGO data to be applied at the same time.
+selects.config_setting_group(
+    name = "cspgo_profile_generate_clang_enabled",
+    match_all = [
+        ":linux_clang",
+        ":cspgo_profile_generate_enabled",
+        ":pgo_profile_use_enabled",
+    ],
+)
+
+# --------------------------------------
+# cspgo_profile_use options
+# --------------------------------------
+
+cspgo_profile_use(
+    name = "cspgo_profile_use",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "cspgo_profile_use_enabled",
+    flag_values = {
+        "//bazel/config:cspgo_profile_use": "True",
+    },
+)
+
+config_setting(
+    name = "cspgo_profile_use_disabled",
+    flag_values = {
+        "//bazel/config:cspgo_profile_use": "False",
+    },
+)
+
+# CSPGO use and PGO use may both be set simultaneously - the cspgo profdata
+# supersedes the pgo one because the cspgo feature is ordered after pgo in the
+# toolchain feature list and clang's -fprofile-use is last-wins.
+selects.config_setting_group(
+    name = "cspgo_profile_use_clang_enabled_linkstatic_enabled",
+    match_all = [
+        ":linux_clang",
+        ":linkstatic_enabled",
+        ":not_s390x_or_ppc",
+        ":cspgo_profile_use_enabled",
+    ],
+)
+
+# --------------------------------------
 # bolt_profile_generate options
 # --------------------------------------
 
@@ -2656,6 +2727,8 @@ selects.config_setting_group(
         ":linker_lld",
         ":pgo_profile_generate_disabled",
         ":pgo_profile_use_disabled",
+        ":cspgo_profile_generate_disabled",
+        ":cspgo_profile_use_disabled",
         "//bazel/config:not_amazon_linux_2023",
     ],
 )

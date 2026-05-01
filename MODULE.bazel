@@ -310,6 +310,10 @@ setup_pgo_data = use_repo_rule("//bazel/repository_rules:pgo_data.bzl", "setup_p
 
 setup_pgo_data(name = "pgo_data")
 
+setup_cspgo_data = use_repo_rule("//bazel/repository_rules:cspgo_data.bzl", "setup_cspgo_data")
+
+setup_cspgo_data(name = "cspgo_data")
+
 setup_bolt_data = use_repo_rule("//bazel/repository_rules:bolt_data.bzl", "setup_bolt_data")
 
 setup_bolt_data(name = "bolt_data")

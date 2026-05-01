@@ -680,6 +680,34 @@ pgo_profile_use = rule(
 )
 
 # =========
+# cspgo_profile_generate
+# =========
+
+cspgo_profile_generate_provider = provider(
+    doc = "Choose if context-sensitive pgo profiling should be generated (clang only, requires pgo_profile_use)",
+    fields = ["enabled"],
+)
+
+cspgo_profile_generate = rule(
+    implementation = lambda ctx: cspgo_profile_generate_provider(enabled = ctx.build_setting_value),
+    build_setting = config.bool(flag = True),
+)
+
+# =========
+# cspgo_profile_use
+# =========
+
+cspgo_profile_use_provider = provider(
+    doc = "Choose if context-sensitive pgo profiling should be used (clang only). May be combined with pgo_profile_use; the cspgo profdata wins via -fprofile-use last-wins.",
+    fields = ["enabled"],
+)
+
+cspgo_profile_use = rule(
+    implementation = lambda ctx: cspgo_profile_use_provider(enabled = ctx.build_setting_value),
+    build_setting = config.bool(flag = True),
+)
+
+# =========
 # bolt_profile_generate
 # =========
 

@@ -99,6 +99,16 @@ PGO_PROFILE_USE_ENABLED = select({
     "@//conditions:default": None,
 })
 
+CSPGO_PROFILE_GENERATE_ENABLED = select({
+    "@//bazel/config:cspgo_profile_generate_clang_enabled": True,
+    "@//conditions:default": False,
+})
+
+CSPGO_PROFILE_USE_ENABLED = select({
+    "@//bazel/config:cspgo_profile_use_clang_enabled_linkstatic_enabled": "@cspgo_data//:clang_cspgo_files",
+    "@//conditions:default": None,
+})
+
 PROPELLER_PROFILE_GENERATE_ENABLED = select({
     "@//bazel/config:propeller_profile_generate_enabled": True,
     "@//conditions:default": False,
@@ -195,6 +205,9 @@ filegroup(
     srcs = glob(["**/*"]) + select({
         "@//bazel/config:pgo_profile_use_clang_enabled_linkstatic_enabled": ["@pgo_data//:clang_pgo_files"],
         "@//bazel/config:pgo_profile_use_gcc_enabled_linkstatic_enabled": ["@pgo_data//:gcc_pgo_files"],
+        "@//conditions:default": [],
+    }) + select({
+        "@//bazel/config:cspgo_profile_use_clang_enabled_linkstatic_enabled": ["@cspgo_data//:clang_cspgo_files"],
         "@//conditions:default": [],
     }) + select ({
         "@//bazel/config:asan_disabled": [],
@@ -322,6 +335,8 @@ mongo_linux_cc_toolchain_config(
     optimization_level = feature_attrs[FEATURES_ATTR_NAMES.OPT_LEVEL],
     pgo_profile_generate = PGO_PROFILE_GENERATE_ENABLED,
     pgo_profile_use = PGO_PROFILE_USE_ENABLED,
+    cspgo_profile_generate = CSPGO_PROFILE_GENERATE_ENABLED,
+    cspgo_profile_use = CSPGO_PROFILE_USE_ENABLED,
     propeller_profile_generate = PROPELLER_PROFILE_GENERATE_ENABLED,
     distributed_thin_lto = DTLTO_ENABLED,
     any_sanitizer_enabled = ANY_SANITIZER_ENABLED,

@@ -8,3 +8,9 @@ DEFAULT_GCC_PGO_DATA_CHECKSUM = "29b9d919abdccb4a2eeb38670e0489312792700559eb728
 
 DEFAULT_BOLT_DATA_URL = "https://mdb-build-public.s3.us-east-1.amazonaws.com/profiling_data/bolt/mongod_8082907046a6f2346056d6c04d5e7588beb59ad6_aarch64_clang_thinlto_pgo_bolt_9.0.0-alpha0-patch-69f3237aa1e13d00073b3664.fdata"
 DEFAULT_BOLT_DATA_CHECKSUM = "f6d546387306498281e2b364d203e728be032f6f672e6c0187f0fb514ae64334"
+
+# CSPGO is a pre-merged profdata combining stage-1 PGO data with stage-2 context-sensitive
+# data. Populate these once a profile has been generated and uploaded. This is currently
+# unused as it does not show significant performance improvements.
+DEFAULT_CLANG_CSPGO_DATA_URL = ""
+DEFAULT_CLANG_CSPGO_DATA_CHECKSUM = ""

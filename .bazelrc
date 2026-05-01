@@ -164,6 +164,8 @@ common --flag_alias=disable_warnings_as_errors=//bazel/config:disable_warnings_a
 common --flag_alias=gcov=//bazel/config:gcov
 common --flag_alias=pgo_profile_generate=//bazel/config:pgo_profile_generate
 common --flag_alias=pgo_profile_use=//bazel/config:pgo_profile_use
+common --flag_alias=cspgo_profile_generate=//bazel/config:cspgo_profile_generate
+common --flag_alias=cspgo_profile_use=//bazel/config:cspgo_profile_use
 common --flag_alias=bolt_profile_generate=//bazel/config:bolt_profile_generate
 common --flag_alias=bolt_profile_use=//bazel/config:bolt_profile_use
 common --flag_alias=propeller_profile_generate=//bazel/config:propeller_profile_generate
@@ -247,6 +249,7 @@ common --//bazel/config:ubsan=False
 common --//bazel/config:libunwind=auto
 common --//bazel/config:dtlto=False
 common --//bazel/config:pgo_profile_use=False
+common --//bazel/config:cspgo_profile_use=False
 common --//bazel/config:bolt_profile_use=False
 common --//bazel/config:evg=False
 common --jobs=300
@@ -276,6 +279,7 @@ common:fastbuild --//bazel/config:tsan=False
 common:fastbuild --//bazel/config:ubsan=False
 common:fastbuild --//bazel/config:dtlto=False
 common:fastbuild --//bazel/config:pgo_profile_use=False
+common:fastbuild --//bazel/config:cspgo_profile_use=False
 common:fastbuild --//bazel/config:bolt_profile_use=False
 common:fastbuild --//bazel/config:libunwind=auto
 common:fastbuild --enable_platform_specific_config=true
@@ -303,6 +307,7 @@ common:dbg --//bazel/config:ubsan=False
 common:dbg --//bazel/config:libunwind=auto
 common:dbg --//bazel/config:dtlto=False
 common:dbg --//bazel/config:pgo_profile_use=False
+common:dbg --//bazel/config:cspgo_profile_use=False
 common:dbg --//bazel/config:bolt_profile_use=False
 common:dbg --enable_platform_specific_config=true
 
@@ -350,6 +355,7 @@ common:opt --//bazel/config:ubsan=False
 common:opt --//bazel/config:libunwind=auto
 common:opt --//bazel/config:dtlto=False
 common:opt --//bazel/config:pgo_profile_use=False
+common:opt --//bazel/config:cspgo_profile_use=False
 common:opt --//bazel/config:bolt_profile_use=False
 common:opt --enable_platform_specific_config=true
 

@@ -1280,6 +1280,67 @@ def _impl(ctx):
                         ],
                     ),
                 ],
+                # Suppress pgo_profile_use whenever cspgo_profile_use is also active:
+                # the cspgo profdata already contains the PGO data, so emitting both
+                # -fprofile-use flags is redundant (and noisy in compile commands).
+                with_features = [
+                    with_feature_set(
+                        features = ["rules_rust_unsupported_feature"],
+                        not_features = ["cspgo_profile_use"],
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    # CSPGO generate: runs on top of stage-1 PGO. Requires pgo_profile_use to be set
+    # so clang consumes the existing PGO data while emitting context-sensitive counters.
+    # Clang-only; no GCC equivalent.
+    cspgo_profile_generate_feature = feature(
+        name = "cspgo_profile_generate",
+        enabled = ctx.attr.cspgo_profile_generate and ctx.attr.compiler == COMPILERS.CLANG,
+        flag_sets = [
+            flag_set(
+                actions = [
+                    ACTION_NAMES.c_compile,
+                    ACTION_NAMES.cpp_compile,
+                    ACTION_NAMES.lto_backend,
+                ] + all_link_actions + lto_index_actions,
+                flag_groups = [
+                    flag_group(
+                        flags = [
+                            "-fcs-profile-generate=mongod_perf",
+                        ],
+                    ),
+                ],
+                with_features = [
+                    with_feature_set(
+                        features = ["rules_rust_unsupported_feature"],
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    cspgo_profile_use_files = ctx.attr.cspgo_profile_use[DefaultInfo].files.to_list() if ctx.attr.cspgo_profile_use != None else []
+    cspgo_profile_use_feature = feature(
+        name = "cspgo_profile_use",
+        enabled = len(cspgo_profile_use_files) > 0,
+        flag_sets = [
+            flag_set(
+                actions = all_compile_actions,
+                flag_groups = [
+                    flag_group(
+                        flags = [
+                            "-fprofile-use=" + cspgo_profile_use_files[0].path if len(cspgo_profile_use_files) > 0 else "",
+                            "-Wno-profile-instr-unprofiled",
+                            "-Wno-profile-instr-out-of-date",
+                            "-Wno-backend-plugin",
+                            "-mllvm",
+                            "-profile-accurate-for-symsinlist=false",
+                        ],
+                    ),
+                ],
                 with_features = [
                     with_feature_set(
                         features = ["rules_rust_unsupported_feature"],
@@ -2068,6 +2129,8 @@ def _impl(ctx):
         gcc_no_ignored_attributes_features,
         pgo_profile_generate_feature,
         pgo_profile_use_feature,
+        cspgo_profile_generate_feature,
+        cspgo_profile_use_feature,
         propeller_profile_generate_feature,
         propeller_profile_use_cc_feature,
         propeller_profile_use_link_feature,
@@ -2164,6 +2227,8 @@ mongo_linux_cc_toolchain_config = rule(
         "optimization_level": attr.string(mandatory = False),
         "pgo_profile_generate": attr.bool(default = False, mandatory = False),
         "pgo_profile_use": attr.label(default = None, mandatory = False),
+        "cspgo_profile_generate": attr.bool(default = False, mandatory = False),
+        "cspgo_profile_use": attr.label(default = None, mandatory = False),
         "bolt_enabled": attr.bool(default = False, mandatory = False),
         "propeller_profile_generate": attr.bool(default = False, mandatory = False),
         "propeller_profile_use": attr.label(default = None, allow_single_file = True, mandatory = False),
