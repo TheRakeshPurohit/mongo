@@ -356,8 +356,15 @@ class ReplicaSetFixture(interface.ReplFixture, interface._DockerComposeInterface
             # to apply the requested repl_config settings using reconfig.
             self._reconfig_repl_set(client, repl_config)
         else:
-            self.logger.info("Issuing replSetInitiate command: %s", repl_config)
-            self._initiate_repl_set(client, repl_config)
+            disagg_enabled = (
+                self.nodes[0]
+                .get_mongod_options()
+                .get("set_parameters", {})
+                .get("disaggregatedStorageEnabled", False)
+            )
+            if not disagg_enabled:
+                self.logger.info("Issuing replSetInitiate command: %s", repl_config)
+                self._initiate_repl_set(client, repl_config)
             self._await_primary()
 
         if self.fcv is not None:
