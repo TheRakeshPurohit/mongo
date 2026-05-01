@@ -66,6 +66,7 @@ selector:
     - assumes_balancer_on
     - requires_profiling
     - assumes_unsharded_collection
+    - resumable_primary_driven_index_builds_incompatible
     - primary_driven_index_builds_incompatible
     - rolling_index_builds
     - requires_commit_quorum

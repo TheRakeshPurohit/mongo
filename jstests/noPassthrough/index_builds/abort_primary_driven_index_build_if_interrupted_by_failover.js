@@ -5,6 +5,7 @@
  * @tags: [
  *   requires_persistence,
  *   requires_replication,
+ *   resumable_primary_driven_index_builds_incompatible,
  * ]
  */
 

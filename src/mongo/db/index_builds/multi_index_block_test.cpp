@@ -33,6 +33,7 @@
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/index_builds/multi_index_block_gen.h"
+#include "mongo/db/index_builds/resumable_index_builds_common.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/op_observer/op_observer_noop.h"
 #include "mongo/db/operation_context.h"
@@ -945,6 +946,201 @@ TEST_F(MultiIndexBlockTest, AbortDropsResumablePrimaryDrivenIndexBuildTable) {
         *shard_role_details::getRecoveryUnit(operationContext()), indexBuildIdent));
 }
 
+// With resumable PDIB enabled, the first call to drainBackgroundWrites must
+// transition into kDrainWrites and persist a ResumeIndexInfo with that phase to the replicated
+// internal-indexBuild-<UUID> table.
+TEST_F(MultiIndexBlockTest, PdibPersistsResumeStateOnFirstDrain) {
+    RAIIServerParameterControllerForTest containerWritesEnabled{"featureFlagContainerWrites", true};
+    RAIIServerParameterControllerForTest pdibEnabled{"featureFlagPrimaryDrivenIndexBuilds", true};
+    RAIIServerParameterControllerForTest resumableEnabled{
+        "featureFlagResumablePrimaryDrivenIndexBuilds", true};
+
+    // Container writes refuse if we're not the primary; the fixture's mock returns false from
+    // canAcceptWritesFor by default, so allow writes explicitly.
+    static_cast<repl::ReplicationCoordinatorMock*>(
+        repl::ReplicationCoordinator::get(getServiceContext()))
+        ->alwaysAllowWrites(true);
+
+    auto indexer = getIndexer();
+    const auto buildUUID = UUID::gen();
+    indexer->setBuildUUID(buildUUID);
+    indexer->setIndexBuildMethod(IndexBuildMethodEnum::kPrimaryDriven);
+    indexer->setContainerWriteBehavior(ContainerWriteBehavior::kReplicate);
+    indexer->setIsResumable(true);
+
+    AutoGetCollection autoColl(operationContext(), getNSS(), MODE_X);
+    CollectionWriter coll(operationContext(), autoColl);
+
+    auto storageEngine = operationContext()->getServiceContext()->getStorageEngine();
+    auto indexBuildInfo =
+        IndexBuildInfo(BSON("key" << BSON("a" << 1) << "name"
+                                  << "a_1"
+                                  << "v" << static_cast<int>(IndexConfig::kLatestIndexVersion)),
+                       "index-1",
+                       *storageEngine);
+
+    auto specs = unittest::assertGet(indexer->init(operationContext(),
+                                                   coll,
+                                                   {indexBuildInfo},
+                                                   MultiIndexBlock::kNoopOnInitFn,
+                                                   MultiIndexBlock::InitMode::SteadyState,
+                                                   boost::none));
+    EXPECT_EQ(1U, specs.size());
+
+    // Insert one document so insertAllDocumentsInCollection runs the collection scan and
+    // creates the bulk loader for the kReplicate path.
+    {
+        WriteUnitOfWork wuow(operationContext());
+        ASSERT_OK(Helpers::insert(operationContext(), *autoColl, BSON("_id" << 0 << "a" << 1)));
+        wuow.commit();
+    }
+
+    // Before any drain, the table exists but no resume record has been written yet.
+    {
+        auto indexBuildIdent = ident::generateNewIndexBuildIdent(buildUUID);
+        if (storageEngine->getEngine()->hasIdent(
+                *shard_role_details::getRecoveryUnit(operationContext()), indexBuildIdent)) {
+            shard_role_details::getRecoveryUnit(operationContext())->abandonSnapshot();
+            EXPECT_FALSE(index_builds::readResumeIndexInfo(
+                storageEngine, operationContext(), indexBuildIdent));
+        }
+    }
+
+    ASSERT_OK(indexer->insertAllDocumentsInCollection(operationContext(), getNSS()));
+    ASSERT_OK(indexer->drainBackgroundWrites(operationContext(),
+                                             RecoveryUnit::ReadSource::kNoTimestamp,
+                                             IndexBuildInterceptor::DrainYieldPolicy::kNoYield));
+
+    shard_role_details::getRecoveryUnit(operationContext())->abandonSnapshot();
+    auto resumeInfo = index_builds::readResumeIndexInfo(
+        storageEngine, operationContext(), ident::generateNewIndexBuildIdent(buildUUID));
+    ASSERT_TRUE(resumeInfo);
+    EXPECT_EQ(IndexBuildPhaseEnum::kDrainWrites, resumeInfo->getPhase());
+    EXPECT_EQ(autoColl->uuid(), resumeInfo->getCollectionUUID());
+
+    // Re-entering drain (second/third pass in production) must not error and must leave the
+    // record intact. Subsequent calls hit firstDrain == false and skip the persist.
+    ASSERT_OK(indexer->drainBackgroundWrites(operationContext(),
+                                             RecoveryUnit::ReadSource::kNoTimestamp,
+                                             IndexBuildInterceptor::DrainYieldPolicy::kNoYield));
+    ASSERT_OK(indexer->drainBackgroundWrites(operationContext(),
+                                             RecoveryUnit::ReadSource::kNoTimestamp,
+                                             IndexBuildInterceptor::DrainYieldPolicy::kNoYield));
+    shard_role_details::getRecoveryUnit(operationContext())->abandonSnapshot();
+    auto laterResumeInfo = index_builds::readResumeIndexInfo(
+        storageEngine, operationContext(), ident::generateNewIndexBuildIdent(buildUUID));
+    ASSERT_TRUE(laterResumeInfo);
+    EXPECT_EQ(IndexBuildPhaseEnum::kDrainWrites, laterResumeInfo->getPhase());
+    EXPECT_EQ(resumeInfo->getCollectionUUID(), laterResumeInfo->getCollectionUUID());
+
+    indexer->abortIndexBuild(operationContext(), coll, MultiIndexBlock::kNoopOnCleanUpFn);
+}
+
+// Empty-collection PDIB short-circuits insertAllDocumentsInCollection before the bulk loader is
+// initialized. Drain entry must skip the persist (rather than null-deref in _constructStateObject)
+// and not leave a resume record on disk.
+TEST_F(MultiIndexBlockTest, PdibSkipsResumeStateOnEmptyCollection) {
+    RAIIServerParameterControllerForTest containerWritesEnabled{"featureFlagContainerWrites", true};
+    RAIIServerParameterControllerForTest pdibEnabled{"featureFlagPrimaryDrivenIndexBuilds", true};
+    RAIIServerParameterControllerForTest resumableEnabled{
+        "featureFlagResumablePrimaryDrivenIndexBuilds", true};
+
+    static_cast<repl::ReplicationCoordinatorMock*>(
+        repl::ReplicationCoordinator::get(getServiceContext()))
+        ->alwaysAllowWrites(true);
+
+    auto indexer = getIndexer();
+    const auto buildUUID = UUID::gen();
+    indexer->setBuildUUID(buildUUID);
+    indexer->setIndexBuildMethod(IndexBuildMethodEnum::kPrimaryDriven);
+    indexer->setContainerWriteBehavior(ContainerWriteBehavior::kReplicate);
+    indexer->setIsResumable(true);
+
+    AutoGetCollection autoColl(operationContext(), getNSS(), MODE_X);
+    CollectionWriter coll(operationContext(), autoColl);
+
+    auto storageEngine = operationContext()->getServiceContext()->getStorageEngine();
+    auto indexBuildInfo =
+        IndexBuildInfo(BSON("key" << BSON("a" << 1) << "name"
+                                  << "a_1"
+                                  << "v" << static_cast<int>(IndexConfig::kLatestIndexVersion)),
+                       "index-1",
+                       *storageEngine);
+
+    auto specs = unittest::assertGet(indexer->init(operationContext(),
+                                                   coll,
+                                                   {indexBuildInfo},
+                                                   MultiIndexBlock::kNoopOnInitFn,
+                                                   MultiIndexBlock::InitMode::SteadyState,
+                                                   boost::none));
+    EXPECT_EQ(1U, specs.size());
+
+    // No documents inserted: insertAllDocumentsInCollection short-circuits, bulk loader is
+    // never created.
+    ASSERT_OK(indexer->insertAllDocumentsInCollection(operationContext(), getNSS()));
+    ASSERT_OK(indexer->drainBackgroundWrites(operationContext(),
+                                             RecoveryUnit::ReadSource::kNoTimestamp,
+                                             IndexBuildInterceptor::DrainYieldPolicy::kNoYield));
+
+    {
+        auto indexBuildIdent = ident::generateNewIndexBuildIdent(buildUUID);
+        if (storageEngine->getEngine()->hasIdent(
+                *shard_role_details::getRecoveryUnit(operationContext()), indexBuildIdent)) {
+            shard_role_details::getRecoveryUnit(operationContext())->abandonSnapshot();
+            EXPECT_FALSE(index_builds::readResumeIndexInfo(
+                storageEngine, operationContext(), indexBuildIdent));
+        }
+    }
+
+    indexer->abortIndexBuild(operationContext(), coll, MultiIndexBlock::kNoopOnCleanUpFn);
+}
+
+// With the resumable PDIB feature flag disabled, drainBackgroundWrites does not persist
+// resume info even on the PDIB path.
+TEST_F(MultiIndexBlockTest, PdibDoesNotPersistResumeStateWhenFeatureFlagOff) {
+    RAIIServerParameterControllerForTest pdibEnabled{"featureFlagPrimaryDrivenIndexBuilds", true};
+    RAIIServerParameterControllerForTest resumableDisabled{
+        "featureFlagResumablePrimaryDrivenIndexBuilds", false};
+
+    auto indexer = getIndexer();
+    const auto buildUUID = UUID::gen();
+    indexer->setBuildUUID(buildUUID);
+    indexer->setIndexBuildMethod(IndexBuildMethodEnum::kPrimaryDriven);
+    // When the resumable PDIB feature flag is off, production code uses kDoNotReplicate. We
+    // mirror that here so init() takes the non-replicated path (no resume table created).
+    indexer->setContainerWriteBehavior(ContainerWriteBehavior::kDoNotReplicate);
+
+    AutoGetCollection autoColl(operationContext(), getNSS(), MODE_X);
+    CollectionWriter coll(operationContext(), autoColl);
+
+    auto storageEngine = operationContext()->getServiceContext()->getStorageEngine();
+    auto indexBuildInfo =
+        IndexBuildInfo(BSON("key" << BSON("a" << 1) << "name"
+                                  << "a_1"
+                                  << "v" << static_cast<int>(IndexConfig::kLatestIndexVersion)),
+                       "index-1",
+                       *storageEngine);
+
+    auto specs = unittest::assertGet(indexer->init(operationContext(),
+                                                   coll,
+                                                   {indexBuildInfo},
+                                                   MultiIndexBlock::kNoopOnInitFn,
+                                                   MultiIndexBlock::InitMode::SteadyState,
+                                                   boost::none));
+    EXPECT_EQ(1U, specs.size());
+
+    ASSERT_OK(indexer->insertAllDocumentsInCollection(operationContext(), getNSS()));
+    ASSERT_OK(indexer->drainBackgroundWrites(operationContext(),
+                                             RecoveryUnit::ReadSource::kNoTimestamp,
+                                             IndexBuildInterceptor::DrainYieldPolicy::kNoYield));
+
+    EXPECT_FALSE(storageEngine->getEngine()->hasIdent(
+        *shard_role_details::getRecoveryUnit(operationContext()),
+        ident::generateNewIndexBuildIdent(buildUUID)));
+
+    indexer->abortIndexBuild(operationContext(), coll, MultiIndexBlock::kNoopOnCleanUpFn);
+}
+
 TEST_F(MultiIndexBlockTest, AbortWithoutCleanupDoesNotDropTables) {
     auto indexer = getIndexer();
     const auto buildUUID = UUID::gen();
@@ -1162,32 +1358,6 @@ ResumeStateContainerInsertObserver& installResumeStateContainerObserver(Operatio
     return *ptr;
 }
 
-// Reads the single resume-state record persisted at the fixed resume-state key in the per-build
-// internal record store created by init() for primary-driven index builds. Returns boost::none if
-// the table has no records. ASSERTS that the table contains at most one record.
-boost::optional<BSONObj> readReplicatedResumeState(OperationContext* opCtx, const UUID& buildUUID) {
-    auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
-    const auto indexBuildIdent = ident::generateNewIndexBuildIdent(buildUUID);
-    shard_role_details::getRecoveryUnit(opCtx)->abandonSnapshot();
-    auto rs = storageEngine->getEngine()->getInternalRecordStore(
-        *shard_role_details::getRecoveryUnit(opCtx), indexBuildIdent, KeyFormat::Long);
-    invariant(rs->keyFormat() == KeyFormat::Long);
-    auto& container =
-        std::get<std::reference_wrapper<IntegerKeyedContainer>>(rs->getContainer()).get();
-    auto cursor = container.getCursor(*shard_role_details::getRecoveryUnit(opCtx));
-    auto record = cursor->next();
-    if (!record) {
-        return boost::none;
-    }
-    // The container-write path always writes at the fixed resume-state key (1).
-    ASSERT_EQUALS(1, record->first);
-    BSONObj obj(record->second.data());
-    auto owned = obj.getOwned();
-    // Confirm there is no second record at any key.
-    ASSERT_FALSE(cursor->next());
-    return owned;
-}
-
 // container_write::insert requires the node to be primary so the OpObserver fires for the
 // container namespace.
 void promoteMockReplCoordToPrimary(ServiceContext* service) {
@@ -1273,28 +1443,32 @@ TEST_F(MultiIndexBlockTest, PersistResumeStateUsesContainerWrites) {
     indexer->persistResumeState(operationContext(), coll.get());
 
     // Exactly one container insert against the resume-state ident, at the fixed resume-state key.
-    ASSERT_EQUALS(1U, observer.countInsertsForIdent(handle.indexBuildIdent));
+    EXPECT_EQ(1U, observer.countInsertsForIdent(handle.indexBuildIdent));
     auto resumeIt =
         std::find_if(observer.intInserts.begin(), observer.intInserts.end(), [&](const auto& ins) {
             return ins.ident == handle.indexBuildIdent;
         });
     ASSERT_NOT_EQUALS(resumeIt, observer.intInserts.end());
-    ASSERT_EQUALS(1, resumeIt->key);
+    EXPECT_EQ(1, resumeIt->key);
 
-    auto persisted = readReplicatedResumeState(operationContext(), handle.buildUUID);
-    ASSERT_TRUE(persisted);
-    auto resumeInfo = ResumeIndexInfo::parse(*persisted, IDLParserContext("ResumeIndexInfo"));
-    ASSERT_EQUALS(handle.buildUUID, resumeInfo.getBuildUUID());
-    ASSERT_EQUALS(autoColl->uuid(), resumeInfo.getCollectionUUID());
+    shard_role_details::getRecoveryUnit(operationContext())->abandonSnapshot();
+    auto resumeInfo = index_builds::readResumeIndexInfo(
+        storageEngine, operationContext(), handle.indexBuildIdent);
+    ASSERT_TRUE(resumeInfo);
+    EXPECT_EQ(handle.buildUUID, resumeInfo->getBuildUUID());
+    EXPECT_EQ(autoColl->uuid(), resumeInfo->getCollectionUUID());
 
     // Per-index IndexStateInfo round-trips with the input spec / idents.
-    ASSERT_EQUALS(1U, resumeInfo.getIndexes().size());
-    const auto& indexState = resumeInfo.getIndexes()[0];
-    ASSERT_EQUALS("a_1", indexState.getSpec()["name"].String());
-    ASSERT_EQUALS(*handle.indexBuildInfo.sideWritesIdent, indexState.getSideWritesTable());
+    EXPECT_EQ(1U, resumeInfo->getIndexes().size());
+    const auto& indexState = resumeInfo->getIndexes()[0];
+    EXPECT_EQ("a_1", indexState.getSpec()["name"].String());
+    EXPECT_EQ(*handle.indexBuildInfo.sideWritesIdent, indexState.getSideWritesTable());
 
-    // The observer's recorded value should be the same BSON we read back.
-    ASSERT_EQUALS(persisted->objsize(), static_cast<int>(resumeIt->value.size()));
+    // The observer's recorded value parses to the same resume info we read back.
+    EXPECT_EQ(
+        handle.buildUUID,
+        ResumeIndexInfo::parse(BSONObj(resumeIt->value.data()), IDLParserContext("ResumeIndexInfo"))
+            .getBuildUUID());
 
     indexer->abortIndexBuild(operationContext(), coll, MultiIndexBlock::kNoopOnCleanUpFn);
 }
@@ -1323,25 +1497,27 @@ TEST_F(MultiIndexBlockTest, PersistResumeStateOverwritesPriorState) {
 
     // The first write inserts at the resume-state key; the second sees an existing key and
     // updates in place.
-    ASSERT_EQUALS(1U, observer.countInsertsForIdent(handle.indexBuildIdent));
-    ASSERT_EQUALS(1U, observer.countUpdatesForIdent(handle.indexBuildIdent));
+    EXPECT_EQ(1U, observer.countInsertsForIdent(handle.indexBuildIdent));
+    EXPECT_EQ(1U, observer.countUpdatesForIdent(handle.indexBuildIdent));
     for (const auto& op : observer.intInserts) {
         if (op.ident == handle.indexBuildIdent) {
-            ASSERT_EQUALS(1, op.key);
+            EXPECT_EQ(1, op.key);
         }
     }
     for (const auto& op : observer.intUpdates) {
         if (op.ident == handle.indexBuildIdent) {
-            ASSERT_EQUALS(1, op.key);
+            EXPECT_EQ(1, op.key);
         }
     }
 
     // ...and the table still has a single record at the resume-state key (overwrite, not append).
-    auto persisted = readReplicatedResumeState(operationContext(), handle.buildUUID);
-    ASSERT_TRUE(persisted);
-    auto resumeInfo = ResumeIndexInfo::parse(*persisted, IDLParserContext("ResumeIndexInfo"));
-    ASSERT_EQUALS(handle.buildUUID, resumeInfo.getBuildUUID());
-    ASSERT_EQUALS(1U, resumeInfo.getIndexes().size());
+    auto* storageEngine = operationContext()->getServiceContext()->getStorageEngine();
+    shard_role_details::getRecoveryUnit(operationContext())->abandonSnapshot();
+    auto resumeInfo = index_builds::readResumeIndexInfo(
+        storageEngine, operationContext(), handle.indexBuildIdent);
+    ASSERT_TRUE(resumeInfo);
+    EXPECT_EQ(handle.buildUUID, resumeInfo->getBuildUUID());
+    EXPECT_EQ(1U, resumeInfo->getIndexes().size());
 
     indexer->abortIndexBuild(operationContext(), coll, MultiIndexBlock::kNoopOnCleanUpFn);
 }
@@ -1366,18 +1542,19 @@ TEST_F(MultiIndexBlockTest, AbortWithoutCleanupUsesContainerWrites) {
 
     indexer->abortWithoutCleanup(operationContext(), coll.get());
 
-    ASSERT_EQUALS(1U, observer.countInsertsForIdent(handle.indexBuildIdent));
+    EXPECT_EQ(1U, observer.countInsertsForIdent(handle.indexBuildIdent));
 
-    auto persisted = readReplicatedResumeState(operationContext(), handle.buildUUID);
-    ASSERT_TRUE(persisted);
-    auto resumeInfo = ResumeIndexInfo::parse(*persisted, IDLParserContext("ResumeIndexInfo"));
-    ASSERT_EQUALS(handle.buildUUID, resumeInfo.getBuildUUID());
-    ASSERT_EQUALS(autoColl->uuid(), resumeInfo.getCollectionUUID());
-    ASSERT_EQUALS(1U, resumeInfo.getIndexes().size());
+    auto* storageEngine = operationContext()->getServiceContext()->getStorageEngine();
+    shard_role_details::getRecoveryUnit(operationContext())->abandonSnapshot();
+    auto resumeInfo = index_builds::readResumeIndexInfo(
+        storageEngine, operationContext(), handle.indexBuildIdent);
+    ASSERT_TRUE(resumeInfo);
+    EXPECT_EQ(handle.buildUUID, resumeInfo->getBuildUUID());
+    EXPECT_EQ(autoColl->uuid(), resumeInfo->getCollectionUUID());
+    EXPECT_EQ(1U, resumeInfo->getIndexes().size());
 
     // After abortWithoutCleanup the per-build table must still exist (resumable shutdown).
-    auto* storageEngine = operationContext()->getServiceContext()->getStorageEngine();
-    ASSERT_TRUE(storageEngine->getEngine()->hasIdent(
+    EXPECT_TRUE(storageEngine->getEngine()->hasIdent(
         *shard_role_details::getRecoveryUnit(operationContext()), handle.indexBuildIdent));
 }
 
@@ -1402,8 +1579,12 @@ TEST_F(MultiIndexBlockTest, PersistResumeStateNoOpWhenNotResumable) {
 
     indexer->persistResumeState(operationContext(), coll.get());
 
-    ASSERT_EQUALS(0U, observer.countInsertsForIdent(handle.indexBuildIdent));
-    ASSERT_FALSE(readReplicatedResumeState(operationContext(), handle.buildUUID));
+    EXPECT_EQ(0U, observer.countInsertsForIdent(handle.indexBuildIdent));
+
+    auto* storageEngine = operationContext()->getServiceContext()->getStorageEngine();
+    shard_role_details::getRecoveryUnit(operationContext())->abandonSnapshot();
+    EXPECT_FALSE(index_builds::readResumeIndexInfo(
+        storageEngine, operationContext(), handle.indexBuildIdent));
 
     indexer->abortIndexBuild(operationContext(), coll, MultiIndexBlock::kNoopOnCleanUpFn);
 }
@@ -1508,14 +1689,14 @@ TEST_F(MultiIndexBlockTest, WriteStateToContainerOnSpillWhenResumable) {
     EXPECT_EQ(observer.countInsertsForIdent(indexBuildIdent), 1);
     EXPECT_GE(observer.countUpdatesForIdent(indexBuildIdent), 1);
 
-    auto persisted = readReplicatedResumeState(operationContext(), buildUUID);
-    ASSERT_TRUE(persisted.has_value());
+    shard_role_details::getRecoveryUnit(operationContext())->abandonSnapshot();
     auto resumeInfo =
-        ResumeIndexInfo::parse(*persisted, IDLParserContext("WriteStateToContainerOnSpill"));
-    EXPECT_EQ(resumeInfo.getBuildUUID(), buildUUID);
-    EXPECT_EQ(resumeInfo.getCollectionUUID(), autoColl->uuid());
-    EXPECT_EQ(resumeInfo.getIndexes().size(), 1);
-    EXPECT_EQ(resumeInfo.getIndexes()[0].getSpec()["name"].String(), "a_1");
+        index_builds::readResumeIndexInfo(&engine, operationContext(), indexBuildIdent);
+    ASSERT_TRUE(resumeInfo.has_value());
+    EXPECT_EQ(resumeInfo->getBuildUUID(), buildUUID);
+    EXPECT_EQ(resumeInfo->getCollectionUUID(), autoColl->uuid());
+    EXPECT_EQ(resumeInfo->getIndexes().size(), 1);
+    EXPECT_EQ(resumeInfo->getIndexes()[0].getSpec()["name"].String(), "a_1");
 
     indexer.abortIndexBuild(operationContext(), coll, MultiIndexBlock::kNoopOnCleanUpFn);
 }

@@ -96,6 +96,7 @@ selector:
     - assumes_write_concern_unchanged
     - operations_longer_than_stepdown_interval
     - uses_parallel_shell
+    - resumable_primary_driven_index_builds_incompatible
     - primary_driven_index_builds_incompatible
     - rolling_index_builds
     - requires_commit_quorum

@@ -1245,6 +1245,7 @@ Status MultiIndexBlock::drainBackgroundWrites(
     invariant(_phase == IndexBuildPhaseEnum::kBulkLoad ||
                   _phase == IndexBuildPhaseEnum::kDrainWrites,
               idl::serialize(_phase));
+    const bool firstDrain = _phase == IndexBuildPhaseEnum::kBulkLoad;
     _phase = IndexBuildPhaseEnum::kDrainWrites;
 
     ReadSourceScope readSourceScope(opCtx, readSource);
@@ -1253,6 +1254,12 @@ Status MultiIndexBlock::drainBackgroundWrites(
     CollectionPtr coll = CollectionPtr::CollectionPtr_UNSAFE(
         CollectionCatalog::get(opCtx)->lookupCollectionByUUID(opCtx, _collectionUUID.value()));
     coll.makeYieldable(opCtx, LockedCollectionYieldRestore(opCtx, coll));
+
+    const bool hasBulkLoader = !_indexes.empty() && _indexes.front().bulk;
+    if (firstDrain && _containerWriteBehavior == ContainerWriteBehavior::kReplicate &&
+        _isResumable && hasBulkLoader) {
+        _writeStateToContainer(opCtx);
+    }
 
     // Drain side-writes table for each index. This only drains what is visible. Assuming intent
     // locks are held on the user collection, more writes can come in after this drain completes.

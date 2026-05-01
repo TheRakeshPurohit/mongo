@@ -87,6 +87,7 @@ selector:
     - cannot_create_unique_index_when_using_hashed_shard_key
     - requires_profiling
     - requires_capped
+    - resumable_primary_driven_index_builds_incompatible
     - primary_driven_index_builds_incompatible
     - rolling_index_builds
     - requires_commit_quorum

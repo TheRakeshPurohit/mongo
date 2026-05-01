@@ -343,6 +343,7 @@ mongo_cc_unit_test(
         ":index_build_entry_helpers",
         ":index_build_entry_idl",
         ":index_builds_coordinator_mongod",
+        ":resumable_index_builds_common",
         "//src/mongo/db:query_exec",
         "//src/mongo/db:server_base",
         "//src/mongo/db:service_context_d_test_fixture",

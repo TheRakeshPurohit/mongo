@@ -45,6 +45,7 @@
 - name: exclude_primary_driven_index_builds_incompatible_tag
   value:
     exclude_with_any_tags:
+      - resumable_primary_driven_index_builds_incompatible
       - primary_driven_index_builds_incompatible
       - rolling_index_builds
       - requires_commit_quorum
