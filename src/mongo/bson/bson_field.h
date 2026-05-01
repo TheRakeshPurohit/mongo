@@ -30,6 +30,7 @@
 #pragma once
 
 #include "mongo/bson/bsonobj.h"
+#include "mongo/util/modules.h"
 
 #include <string>
 
@@ -71,10 +72,12 @@ namespace mongo {
  *
  *     // Use BSONField::operator()() to retrieve the name of the field:
  *     BSONObj obj = BSON(MyCollFields::draining() << 1);
+ *
+ * Deprecated: IDL should now be preferred for imposing structure onto BSON.
  */
 
 template <typename T>
-class BSONFieldValue {
+class MONGO_MOD_USE_REPLACEMENT(idl) BSONFieldValue {
 public:
     BSONFieldValue(const std::string& name, const T& t) : _name(name), _t(t) {}
 
@@ -91,7 +94,7 @@ private:
 };
 
 template <typename T>
-class BSONField {
+class MONGO_MOD_USE_REPLACEMENT(idl) BSONField {
 public:
     BSONField(const std::string& name) : _name(name) {}
 

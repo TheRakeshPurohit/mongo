@@ -63,6 +63,8 @@ core:
     - src/mongo/db/stats/counter_ops.h
 
 core.bson:
+  meta:
+    fully_marked: true
   files:
     - src/mongo/bson/
     # Unsure about the next one but putting here for now:

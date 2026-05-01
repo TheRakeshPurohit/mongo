@@ -31,7 +31,6 @@
 #include "mongo/base/error_codes.h"
 #include "mongo/base/string_data.h"
 #include "mongo/bson/bsontypes.h"
-#include "mongo/bson/util/bson_check.h"
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_checks.h"
@@ -63,8 +62,19 @@
 #include <boost/move/utility_core.hpp>
 #include <boost/none.hpp>
 #include <boost/optional/optional.hpp>
+#include <fmt/format.h>
 
 namespace mongo {
+
+void checkBSONType(BSONType type, const BSONElement& elem) {
+    uassert(elem.type() == BSONType::eoo ? ErrorCodes::NoSuchKey : ErrorCodes::TypeMismatch,
+            fmt::format("Wrong type for {:?}. Expected a {}, got a {}.",
+                        elem.fieldNameStringData(),
+                        typeName(type),
+                        typeName(elem.type())),
+            elem.type() == type);
+}
+
 UUID OplogApplicationChecks::getUUIDFromOplogEntry(const BSONObj& oplogEntry) {
     BSONElement uiElem = oplogEntry["ui"];
     return uassertStatusOK(UUID::parse(uiElem));

@@ -33,8 +33,11 @@
 #include "mongo/bson/bsonelement.h"
 #include "mongo/bson/bsonelement_comparator_interface.h"
 #include "mongo/bson/bsonobj.h"
+#include "mongo/util/modules.h"
 
 #include <cstddef>
+
+MONGO_MOD_PUBLIC;
 
 namespace mongo {
 namespace bson {

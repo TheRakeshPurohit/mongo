@@ -35,7 +35,6 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/bson/bsontypes.h"
-#include "mongo/bson/util/bson_check.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/auth/authorization_session.h"  // IWYU pragma: keep
 #include "mongo/db/commands.h"
@@ -80,7 +79,7 @@ bool checkCOperationType(const BSONObj& opObj, const StringData opName) {
         }
     }
     return false;
-};
+}
 
 /**
  * Returns kNeedsSuperuser, if the provided applyOps command contains an empty applyOps command or

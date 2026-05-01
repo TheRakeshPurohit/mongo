@@ -188,21 +188,6 @@ Status bsonExtractOIDField(const BSONObj& object, StringData fieldName, OID* out
     return status;
 }
 
-Status bsonExtractOIDFieldWithDefault(const BSONObj& object,
-                                      StringData fieldName,
-                                      const OID& defaultValue,
-                                      OID* out) {
-    BSONElement element;
-    Status status = bsonExtractTypedFieldImpl(object, fieldName, BSONType::oid, &element, true);
-    if (status == ErrorCodes::NoSuchKey) {
-        *out = defaultValue;
-        return Status::OK();
-    }
-    if (status.isOK())
-        *out = element.OID();
-    return status;
-}
-
 Status bsonExtractStringFieldWithDefault(const BSONObj& object,
                                          StringData fieldName,
                                          StringData defaultValue,
@@ -226,18 +211,6 @@ Status bsonExtractDoubleField(const BSONObj& object, StringData fieldName, doubl
     return bsonExtractDoubleFieldImpl(object, fieldName, out, false);
 }
 
-Status bsonExtractDoubleFieldWithDefault(const BSONObj& object,
-                                         StringData fieldName,
-                                         double defaultValue,
-                                         double* out) {
-    Status status = bsonExtractDoubleFieldImpl(object, fieldName, out, true);
-    if (status == ErrorCodes::NoSuchKey) {
-        *out = defaultValue;
-        return Status::OK();
-    }
-    return status;
-}
-
 Status bsonExtractIntegerFieldWithDefault(const BSONObj& object,
                                           StringData fieldName,
                                           long long defaultValue,
@@ -250,31 +223,95 @@ Status bsonExtractIntegerFieldWithDefault(const BSONObj& object,
     return status;
 }
 
-Status bsonExtractIntegerFieldWithDefaultIf(const BSONObj& object,
-                                            StringData fieldName,
-                                            long long defaultValue,
-                                            std::function<bool(long long)> pred,
-                                            const std::string& predDescription,
-                                            long long* out) {
-    Status status = bsonExtractIntegerFieldWithDefault(object, fieldName, defaultValue, out);
-    if (!status.isOK()) {
-        return status;
-    }
-    if (!pred(*out)) {
-        return Status(ErrorCodes::BadValue,
-                      str::stream() << "Invalid value in field \"" << fieldName << "\": " << *out
-                                    << ": " << predDescription);
-    }
-    return status;
+////////////////////////////////////////////////////////////
+// StatusWith variants of the above.
+
+StatusWith<BSONElement> bsonExtractField(const BSONObj& object, StringData fieldName) {
+    BSONElement out;
+    if (auto st = bsonExtractField(object, fieldName, &out); !st.isOK())
+        return st;
+    return out;
 }
 
-Status bsonExtractIntegerFieldWithDefaultIf(const BSONObj& object,
-                                            StringData fieldName,
-                                            long long defaultValue,
-                                            std::function<bool(long long)> pred,
-                                            long long* out) {
-    return bsonExtractIntegerFieldWithDefaultIf(
-        object, fieldName, defaultValue, pred, "constraint failed", out);
+StatusWith<BSONElement> bsonExtractTypedField(const BSONObj& object,
+                                              StringData fieldName,
+                                              BSONType type) {
+    BSONElement out;
+    if (auto st = bsonExtractTypedField(object, fieldName, type, &out); !st.isOK())
+        return st;
+    return out;
+}
+
+StatusWith<bool> bsonExtractBooleanField(const BSONObj& object, StringData fieldName) {
+    bool out;
+    if (auto st = bsonExtractBooleanField(object, fieldName, &out); !st.isOK())
+        return st;
+    return out;
+}
+
+StatusWith<long long> bsonExtractIntegerField(const BSONObj& object, StringData fieldName) {
+    long long out;
+    if (auto st = bsonExtractIntegerField(object, fieldName, &out); !st.isOK())
+        return st;
+    return out;
+}
+
+StatusWith<double> bsonExtractDoubleField(const BSONObj& object, StringData fieldName) {
+    double out;
+    if (auto st = bsonExtractDoubleField(object, fieldName, &out); !st.isOK())
+        return st;
+    return out;
+}
+
+StatusWith<std::string> bsonExtractStringField(const BSONObj& object, StringData fieldName) {
+    std::string out;
+    if (auto st = bsonExtractStringField(object, fieldName, &out); !st.isOK())
+        return st;
+    return out;
+}
+
+StatusWith<Timestamp> bsonExtractTimestampField(const BSONObj& object, StringData fieldName) {
+    Timestamp out;
+    if (auto st = bsonExtractTimestampField(object, fieldName, &out); !st.isOK())
+        return st;
+    return out;
+}
+
+StatusWith<OID> bsonExtractOIDField(const BSONObj& object, StringData fieldName) {
+    OID out;
+    if (auto st = bsonExtractOIDField(object, fieldName, &out); !st.isOK())
+        return st;
+    return out;
+}
+
+StatusWith<bool> bsonExtractBooleanFieldWithDefault(const BSONObj& object,
+                                                    StringData fieldName,
+                                                    bool defaultValue) {
+    bool out;
+    if (auto st = bsonExtractBooleanFieldWithDefault(object, fieldName, defaultValue, &out);
+        !st.isOK())
+        return st;
+    return out;
+}
+
+StatusWith<long long> bsonExtractIntegerFieldWithDefault(const BSONObj& object,
+                                                         StringData fieldName,
+                                                         long long defaultValue) {
+    long long out;
+    if (auto st = bsonExtractIntegerFieldWithDefault(object, fieldName, defaultValue, &out);
+        !st.isOK())
+        return st;
+    return out;
+}
+
+StatusWith<std::string> bsonExtractStringFieldWithDefault(const BSONObj& object,
+                                                          StringData fieldName,
+                                                          StringData defaultValue) {
+    std::string out;
+    if (auto st = bsonExtractStringFieldWithDefault(object, fieldName, defaultValue, &out);
+        !st.isOK())
+        return st;
+    return out;
 }
 
 }  // namespace mongo

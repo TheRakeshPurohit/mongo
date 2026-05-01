@@ -102,9 +102,15 @@ StatusWith<ReplSetMetadata> ReplSetMetadata::readFromMetadata(const BSONObj& met
         return status;
 
     OID id;
-    status = bsonExtractOIDFieldWithDefault(replMetadataObj, kReplicaSetIdFieldName, OID(), &id);
-    if (!status.isOK())
-        return status;
+    if (BSONElement e = replMetadataObj.getField(kReplicaSetIdFieldName); !e.eoo()) {
+        if (e.type() != BSONType::oid)
+            return Status(ErrorCodes::TypeMismatch,
+                          fmt::format("{:?} had the wrong type. Expected {}, found {}",
+                                      kReplicaSetIdFieldName,
+                                      BSONType::oid,
+                                      typeName(e.type())));
+        id = e.OID();
+    }
 
     // We provide a default because these fields will be removed in SERVER-27668.
     long long primaryIndex;

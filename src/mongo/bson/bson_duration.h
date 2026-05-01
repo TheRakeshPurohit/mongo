@@ -33,6 +33,7 @@
 #include "mongo/bson/bsonelement.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/util/duration.h"
+#include "mongo/util/modules.h"
 
 namespace mongo {
 
@@ -42,7 +43,7 @@ namespace mongo {
  * e.g. parseDurationFromCount<Seconds> will parse a number of seconds as a Duration.
  */
 template <typename Duration>
-Duration parseDurationFromCount(const BSONElement& elem) {
+MONGO_MOD_PUBLIC_FOR_TECHNICAL_REASONS Duration parseDurationFromCount(const BSONElement& elem) {
     uassert(ErrorCodes::BadValue,
             str::stream() << "Duration value must be numeric, got: " << typeName(elem.type()),
             elem.isNumber());
@@ -55,9 +56,8 @@ Duration parseDurationFromCount(const BSONElement& elem) {
  * Serializes a Duration to a BSON int32/int64 for the specified units.
  */
 template <typename ToDuration, typename Period>
-void serializeDurationToCount(const Duration<Period>& duration,
-                              StringData fieldName,
-                              BSONObjBuilder* builder) {
+MONGO_MOD_PUBLIC_FOR_TECHNICAL_REASONS void serializeDurationToCount(
+    const Duration<Period>& duration, StringData fieldName, BSONObjBuilder* builder) {
     builder->append(fieldName, durationCount<ToDuration>(duration));
 }
 

@@ -31,14 +31,15 @@
 #include "mongo/bson/bsonelement.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/database_name.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/util/modules.h"
 #include "mongo/util/uuid.h"
 
 namespace mongo {
-class BSONElement;
-class BSONObj;
-class DatabaseName;
-class OperationContext;
+
+/** `uassert` that `elem` type matches the specified `type`. */
+void checkBSONType(BSONType type, const BSONElement& elem);
 
 // OplogApplicationValidity represents special conditions relevant to authorization for
 // oplog application.

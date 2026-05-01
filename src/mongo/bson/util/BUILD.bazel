@@ -22,7 +22,6 @@ mongo_cc_library(
 mongo_cc_unit_test(
     name = "bson_util_test",
     srcs = [
-        "bson_check_test.cpp",
         "bson_extract_test.cpp",
         "builder_test.cpp",
     ],

@@ -147,48 +147,4 @@ TEST(ExtractBSON, ExtractIntegerField) {
     ASSERT_EQUALS(-(1LL << 55), v);
     ASSERT_OK(bsonExtractIntegerField(BSON("a" << 5178), "a", &v));
     ASSERT_EQUALS(5178, v);
-    auto pred = [](long long x) {
-        return x > 0;
-    };
-    ASSERT_OK(bsonExtractIntegerFieldWithDefaultIf(BSON("a" << 1), "a", -1LL, pred, &v));
-    ASSERT_OK(bsonExtractIntegerFieldWithDefaultIf(BSON("a" << 1), "b", 1LL, pred, &v));
-    auto msg = "'a' has to be greater than zero";
-    auto status = bsonExtractIntegerFieldWithDefaultIf(BSON("a" << -1), "a", 1LL, pred, msg, &v);
-    ASSERT_EQUALS(ErrorCodes::BadValue, status);
-    ASSERT_STRING_CONTAINS(status.reason(), msg);
-    ASSERT_EQUALS(ErrorCodes::BadValue,
-                  bsonExtractIntegerFieldWithDefaultIf(BSON("a" << 1), "b", -1LL, pred, &v));
-}
-
-TEST(ExtractBSON, ExtractDoubleFieldWithDefault) {
-    double d;
-    ASSERT_EQUALS(ErrorCodes::NoSuchKey, bsonExtractDoubleField(BSON("a" << 1), "b", &d));
-    ASSERT_OK(bsonExtractDoubleFieldWithDefault(BSON("a" << 1), "b", 1.2, &d));
-    ASSERT_EQUALS(ErrorCodes::TypeMismatch, bsonExtractDoubleField(BSON("a" << false), "a", &d));
-    ASSERT_OK(bsonExtractDoubleField(BSON("a" << 5178.0), "a", &d));
-    ASSERT_EQUALS(5178.0, d);
-    ASSERT_OK(bsonExtractDoubleField(BSON("a" << 5178), "a", &d));
-    ASSERT_EQUALS(5178, d);
-    ASSERT_OK(bsonExtractDoubleField(BSON("a" << 5178), "a", &d));
-    ASSERT_EQUALS(5178.0, d);
-    ASSERT_OK(bsonExtractDoubleField(BSON("a" << 5178.0), "a", &d));
-    ASSERT_EQUALS(5178, d);
-    ASSERT_OK(bsonExtractDoubleFieldWithDefault(BSON("a" << 1.0), "b", 1, &d));
-    ASSERT_EQUALS(1.0, d);
-    ASSERT_OK(bsonExtractDoubleFieldWithDefault(BSON("a" << 2.0), "a", 1, &d));
-    ASSERT_EQUALS(2.0, d);
-}
-
-TEST(ExtractBSON, ExtractOIDFieldWithDefault) {
-    OID r;
-    OID def = OID();
-    ASSERT_EQUALS(ErrorCodes::NoSuchKey, bsonExtractOIDField(BSON("a" << 1), "b", &r));
-    ASSERT_OK(bsonExtractOIDFieldWithDefault(BSON("a" << 2), "b", def, &r));
-    ASSERT_EQUALS(ErrorCodes::TypeMismatch, bsonExtractOIDField(BSON("a" << false), "a", &r));
-    ASSERT_OK(bsonExtractOIDField(BSON("a" << def), "a", &r));
-    ASSERT_EQUALS(def, r);
-    ASSERT_OK(bsonExtractOIDFieldWithDefault(BSON("a" << 3.0), "b", def, &r));
-    ASSERT_EQUALS(def, r);
-    ASSERT_OK(bsonExtractOIDFieldWithDefault(BSON("a" << def), "a", OID(), &r));
-    ASSERT_EQUALS(def, r);
 }

@@ -33,8 +33,11 @@
 #include "mongo/bson/bson_validate_gen.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsontypes.h"
+#include "mongo/util/modules.h"
 
 #include <cstdint>
+
+MONGO_MOD_PUBLIC;
 
 namespace mongo {
 
@@ -47,7 +50,7 @@ enum ValidationVersion {
 
 // When adding new versions of BSON validation, update both this and the range and the
 // default for the server parameter in src/mongo/bson/bson_validate.idl
-static constexpr ValidationVersion currentValidationVersion = V2_Column;
+constexpr inline ValidationVersion currentValidationVersion = V2_Column;
 
 /**
  * Checks that the buf holds a BSON object as defined in http://bsonspec.org/spec.html.
