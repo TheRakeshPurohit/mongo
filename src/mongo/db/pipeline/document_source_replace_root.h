@@ -83,9 +83,7 @@ public:
         // longer be executed in SBE. When that happens, the expression optimizer updates the
         // 'sbeCompatibility' value in the ExpressionContext, which we can use to update the
         // '_sbeCompatibility' value for this $replaceRoot operation.
-        SbeCompatibility originalSbeCompatibility =
-            _expCtx->sbeCompatibilityExchange(_sbeCompatibility);
-        ON_BLOCK_EXIT([&] { this->_expCtx->setSbeCompatibility(originalSbeCompatibility); });
+        TemporarySbeCompatibilityGuard guard(_expCtx.get(), _sbeCompatibility);
 
         _newRoot = _newRoot->optimize();
 

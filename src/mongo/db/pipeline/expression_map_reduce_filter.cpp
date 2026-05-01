@@ -152,7 +152,7 @@ ExpressionMap::ExpressionMap(ExpressionContext* const expCtx,
       _varId(varId),
       _idxName(std::move(idxName)),
       _idxId(idxId) {
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
 }
 
 boost::intrusive_ptr<Expression> ExpressionMap::optimize() {
@@ -441,7 +441,7 @@ ExpressionFilter::ExpressionFilter(ExpressionContext* const expCtx,
       _idxName(std::move(idxName)),
       _idxId(idxId),
       _limit(_children.size() == 3 ? 2 : boost::optional<size_t>(boost::none)) {
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
 }
 
 boost::intrusive_ptr<Expression> ExpressionFilter::optimize() {

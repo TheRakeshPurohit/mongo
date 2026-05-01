@@ -58,7 +58,7 @@ namespace mongo {
 AccumulationExpression parseInternalConstructStats(ExpressionContext* const expCtx,
                                                    BSONElement elem,
                                                    VariablesParseState vps) {
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
 
     IDLParserContext parser("$_internalConstructStats");
     tassert(7261401,

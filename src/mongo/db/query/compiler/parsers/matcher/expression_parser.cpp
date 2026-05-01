@@ -131,7 +131,7 @@ void disableSBEForUnsupportedExpressions(const boost::intrusive_ptr<ExpressionCo
                                          const MatchExpression* node) {
     auto fieldRef = node->fieldRef();
     if (fieldRef && fieldRef->hasNumericPathComponents()) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
         return;
     }
     for (size_t i = 0; i < node->numChildren(); ++i) {
@@ -802,7 +802,7 @@ StatusWithMatchExpression parseType(boost::optional<StringData> name,
 
     if constexpr (std::is_same_v<T, InternalSchemaTypeExpression> ||
                   std::is_same_v<T, InternalSchemaBinDataEncryptedTypeExpression>) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
     return {std::make_unique<T>(name,
                                 std::move(typeSet.getValue()),
@@ -902,7 +902,7 @@ StatusWithMatchExpression parseInternalSchemaFmod(
         return {ErrorCodes::BadValue, str::stream() << path << " has too many elements"};
     }
 
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     return {std::make_unique<InternalSchemaFmodMatchExpression>(
         name, d.numberDecimal(), r.numberDecimal())};
 }
@@ -925,7 +925,7 @@ StatusWithMatchExpression parseInternalSchemaRootDocEq(
                        str::stream() << InternalSchemaRootDocEqMatchExpression::kName
                                      << " must be an object, found type " << elem.type())};
     }
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     auto rootDocEq =
         std::make_unique<InternalSchemaRootDocEqMatchExpression>(elem.embeddedObject());
     return {std::move(rootDocEq)};
@@ -945,7 +945,7 @@ StatusWithMatchExpression parseInternalSchemaSingleIntegerArgument(
         return parsedInt.getStatus();
     }
 
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     return {std::make_unique<T>(name, parsedInt.getValue())};
 }
 
@@ -965,7 +965,7 @@ StatusWithMatchExpression parseTopLevelInternalSchemaSingleIntegerArgument(
     if (!parsedInt.isOK()) {
         return parsedInt.getStatus();
     }
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     return {std::make_unique<T>(parsedInt.getValue())};
 }
 
@@ -1222,7 +1222,7 @@ StatusWithMatchExpression parseInternalBucketGeoWithinMatchExpression(
         indexVersion = static_cast<S2IndexVersion>(versionVal);
     }
 
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     return {std::make_unique<InternalBucketGeoWithinMatchExpression>(
         geoContainer, field, nullptr, indexVersion)};
 }
@@ -1281,7 +1281,7 @@ StatusWithMatchExpression parseInternalSchemaAllowedProperties(
         return properties.getStatus();
     }
 
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     return {std::make_unique<InternalSchemaAllowedPropertiesMatchExpression>(
         std::move(properties.getValue()),
         namePlaceholder.getValue(),
@@ -1337,7 +1337,7 @@ StatusWithMatchExpression parseInternalSchemaMatchArrayIndex(
         return expressionWithPlaceholder.getStatus();
     }
 
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     return {std::make_unique<InternalSchemaMatchArrayIndexMatchExpression>(
         path, index.getValue(), std::move(expressionWithPlaceholder.getValue()))};
 }
@@ -1354,7 +1354,7 @@ StatusWithMatchExpression parseGeo(boost::optional<StringData> name,
             return parseStatus;
         }
         StringData operatorName = section.firstElementFieldNameStringData();
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
         return {std::make_unique<GeoMatchExpression>(
             name, gq.release(), section, createAnnotation(expCtx, operatorName, name, section))};
     } else {
@@ -1377,7 +1377,7 @@ StatusWithMatchExpression parseGeo(boost::optional<StringData> name,
         if (!status.isOK()) {
             return status;
         }
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
         expCtx->incrementMatchExprCounter(section.firstElementFieldName());
         return {std::make_unique<GeoNearMatchExpression>(name, nq.release(), section)};
     }
@@ -1416,7 +1416,7 @@ StatusWithMatchExpression parseTreeTopLevel(
     }
 
     if constexpr (std::is_same_v<T, InternalSchemaXorMatchExpression>) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
     return {std::move(temp)};
 }
@@ -1653,7 +1653,7 @@ StatusWithMatchExpression parseInternalSchemaFixedArityArgument(
         ++position;
     }
 
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     return {std::make_unique<T>(std::move(expressions))};
 }
 
@@ -1722,7 +1722,7 @@ StatusWithMatchExpression parseInternalSchemaBinDataSubType(
                           << " value must represent BinData subtype: " << valueAsInt.getValue());
     }
 
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     return {std::make_unique<InternalSchemaBinDataSubTypeExpression>(
         name, static_cast<BinDataType>(valueAsInt.getValue()))};
 }
@@ -1981,7 +1981,7 @@ StatusWithMatchExpression parseSubField(const BSONObj& context,
 
             auto exprEqHash = std::make_unique<InternalEqHashedKey>(name, e);
             exprEqHash->setCollator(expCtx->getCollator());
-            expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+            expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
             return {std::move(exprEqHash)};
         }
 
@@ -2030,7 +2030,7 @@ StatusWithMatchExpression parseSubField(const BSONObj& context,
                 return parsedSubObjExpr;
             }
 
-            expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+            expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
             return {std::make_unique<InternalSchemaObjectMatchExpression>(
                 name,
                 std::move(parsedSubObjExpr.getValue()),
@@ -2043,7 +2043,7 @@ StatusWithMatchExpression parseSubField(const BSONObj& context,
                         str::stream() << name << " must be a boolean of value true"};
             }
 
-            expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+            expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
             return {std::make_unique<InternalSchemaUniqueItemsMatchExpression>(name)};
         }
 
@@ -2123,7 +2123,7 @@ StatusWithMatchExpression parseSubField(const BSONObj& context,
                 return exprWithPlaceholder.getStatus();
             }
 
-            expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+            expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
             return {std::make_unique<InternalSchemaAllElemMatchFromIndexMatchExpression>(
                 name, parsedIndex.getValue(), std::move(exprWithPlaceholder.getValue()))};
         }
@@ -2133,7 +2133,7 @@ StatusWithMatchExpression parseSubField(const BSONObj& context,
         }
 
         case PathAcceptingKeyword::INTERNAL_SCHEMA_EQ: {
-            expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+            expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
             return {std::make_unique<InternalSchemaEqMatchExpression>(name, e)};
         }
 

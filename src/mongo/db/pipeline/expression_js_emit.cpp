@@ -48,7 +48,7 @@ ExpressionInternalJsEmit::ExpressionInternalJsEmit(ExpressionContext* const expC
     : Expression(expCtx, {std::move(thisRef)}),
       _thisRef(_children[0]),
       _funcSource(std::move(funcSource)) {
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
 }
 
 boost::intrusive_ptr<Expression> ExpressionInternalJsEmit::parse(ExpressionContext* const expCtx,

@@ -55,7 +55,7 @@ ExpressionFunction::ExpressionFunction(ExpressionContext* const expCtx,
       _assignFirstArgToThis(assignFirstArgToThis),
       _funcSource(std::move(funcSource)),
       _lang(std::move(lang)) {
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
 }
 
 Value ExpressionFunction::serialize(const SerializationOptions& options) const {

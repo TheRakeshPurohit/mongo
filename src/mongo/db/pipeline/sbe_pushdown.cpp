@@ -82,9 +82,7 @@ boost::intrusive_ptr<DocumentSource> sbeCompatibleProjectionFromSingleDocumentTr
     }
 
     const boost::intrusive_ptr<ExpressionContext>& expCtx = transformStage.getExpCtx();
-    SbeCompatibility originalSbeCompatibility =
-        expCtx->sbeCompatibilityExchange(SbeCompatibility::noRequirements);
-    ON_BLOCK_EXIT([&] { expCtx->setSbeCompatibility(originalSbeCompatibility); });
+    TemporarySbeCompatibilityGuard guard(expCtx.get(), SbeCompatibility::noRequirements);
 
     boost::intrusive_ptr<DocumentSource> projectionStage =
         make_intrusive<DocumentSourceInternalProjection>(

@@ -175,8 +175,8 @@ public:
         kForcePlanCache,    // Query is being cached even if it has a single plan
     };
 
-    // TODO SERVER-123287: variables are heavily used everywhere, move these inside
-    // ExpressionContextParams at some point
+    // TODO SERVER-123364: variables are heavily used everywhere, move these inside
+    // ExpressionContextParams at some point.
     Variables variables;
     VariablesParseState variablesParseState;
 
@@ -815,12 +815,22 @@ public:
         return _params.sbeCompatibility;
     }
 
-    SbeCompatibility sbeCompatibilityExchange(SbeCompatibility other) {
-        return std::exchange(_params.sbeCompatibility, other);
+    /**
+     * Unconditionally resets the context's SBE compatibility to 'sbeCompatibility', discarding
+     * whatever was previously accumulated. Only use this in narrow situations where the context
+     * is being repurposed for a new sub-computation whose compatibility is independent of prior
+     * state. Prefer capSbeCompatibility() in almost all cases.
+     */
+    void overrideSbeCompatibility(SbeCompatibility sbeCompatibility) {
+        _params.sbeCompatibility = sbeCompatibility;
     }
 
-    void setSbeCompatibility(SbeCompatibility sbeCompatibility) {
-        _params.sbeCompatibility = sbeCompatibility;
+    /**
+     * Ensures the context's SBE compatibility is no more permissive than 'sbeCompatibility',
+     * i.e. sets it to min(current, sbeCompatibility).
+     */
+    void capSbeCompatibility(SbeCompatibility sbeCompatibility) {
+        _params.sbeCompatibility = std::min(sbeCompatibility, _params.sbeCompatibility);
     }
 
     SbeCompatibility getSbeGroupCompatibility() const {
@@ -1239,6 +1249,7 @@ protected:
 
     friend class CollatorStash;
     friend class ExpressionContextBuilder;
+    friend class TemporarySbeCompatibilityGuard;
 
     /**
      * Internal helper class that keeps track of how many times we called 'checkForInterrupt()', and
@@ -1387,6 +1398,33 @@ private:
     // Initialized in constructor to avoid including server_feature_flags_gen.h
     // in this header file.
     Deferred<bool (*)(const VersionContext&)> _featureFlagStreams;
+};
+
+/**
+ * RAII guard that temporarily sets the ExpressionContext's SBE compatibility to a given level,
+ * restoring the original value on destruction. Used to isolate SBE compatibility measurement for a
+ * sub-expression or sub-parse: the context is reset to a known baseline so that any
+ * capSbeCompatibility() calls made during the guarded scope reflect only the enclosed work.
+ * After the guard is destroyed, callers can call capSbeCompatibility() to permanently propagate
+ * the measured result back into the context.
+ */
+class TemporarySbeCompatibilityGuard {
+public:
+    TemporarySbeCompatibilityGuard(ExpressionContext* expCtx, SbeCompatibility startLevel)
+        : _expCtx(*expCtx), _saved(_expCtx._params.sbeCompatibility) {
+        _expCtx._params.sbeCompatibility = startLevel;
+    }
+
+    ~TemporarySbeCompatibilityGuard() {
+        _expCtx._params.sbeCompatibility = _saved;
+    }
+
+    TemporarySbeCompatibilityGuard(const TemporarySbeCompatibilityGuard&) = delete;
+    TemporarySbeCompatibilityGuard& operator=(const TemporarySbeCompatibilityGuard&) = delete;
+
+private:
+    ExpressionContext& _expCtx;
+    SbeCompatibility _saved;
 };
 
 }  // namespace mongo

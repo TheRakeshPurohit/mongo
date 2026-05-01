@@ -2031,7 +2031,7 @@ intrusive_ptr<Expression> ExpressionMeta::parse(ExpressionContext* const expCtx,
 
 ExpressionMeta::ExpressionMeta(ExpressionContext* const expCtx, MetaType metaType)
     : Expression(expCtx), _metaType(metaType) {
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     expCtx->setSbePipelineCompatibility(SbeCompatibility::notCompatible);
 }
 
@@ -2262,7 +2262,7 @@ ExpressionInternalFLEEqual::ExpressionInternalFLEEqual(ExpressionContext* const 
                                                        boost::intrusive_ptr<Expression> field,
                                                        ServerZerosEncryptionToken zerosToken)
     : Expression(expCtx, {std::move(field)}), _evaluatorV2({std::move(zerosToken)}) {
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
 }
 
 REGISTER_STABLE_EXPRESSION(_internalFleEq, ExpressionInternalFLEEqual::parse);
@@ -2317,7 +2317,7 @@ ExpressionInternalFLEBetween::ExpressionInternalFLEBetween(
     boost::intrusive_ptr<Expression> field,
     std::vector<ServerZerosEncryptionToken> zerosTokens)
     : Expression(expCtx, {std::move(field)}), _evaluatorV2(std::move(zerosTokens)) {
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
 }
 
 REGISTER_STABLE_EXPRESSION(_internalFleBetween, ExpressionInternalFLEBetween::parse);
@@ -3874,7 +3874,7 @@ ExpressionConvert::ExpressionConvert(ExpressionContext* const expCtx,
                   std::move(byteOrder)}),
       _allowBinDataConvert{allowBinDataConvert},
       _allowBinDataConvertNumeric{allowBinDataConvertNumeric} {
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
 }
 
 intrusive_ptr<Expression> ExpressionConvert::parse(ExpressionContext* const expCtx,
@@ -4963,7 +4963,7 @@ REGISTER_EXPRESSION_WITH_FEATURE_FLAG(createUUID,
                                       &feature_flags::gFeatureFlagUUIDExpression);
 
 ExpressionCreateUUID::ExpressionCreateUUID(ExpressionContext* const expCtx) : Expression(expCtx) {
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
 }
 
 intrusive_ptr<Expression> ExpressionCreateUUID::parse(ExpressionContext* const expCtx,
@@ -5003,7 +5003,7 @@ REGISTER_EXPRESSION_WITH_FEATURE_FLAG(createObjectId,
 
 ExpressionCreateObjectId::ExpressionCreateObjectId(ExpressionContext* const expCtx)
     : Expression(expCtx) {
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
 }
 
 intrusive_ptr<Expression> ExpressionCreateObjectId::parse(ExpressionContext* const expCtx,
@@ -5051,7 +5051,7 @@ ExpressionSerializeEJSON::ExpressionSerializeEJSON(ExpressionContext* const expC
                      std::move(relaxed),
                      std::move(onError),
                  }) {
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
 }
 
 intrusive_ptr<Expression> ExpressionSerializeEJSON::parse(ExpressionContext* const expCtx,
@@ -5147,7 +5147,7 @@ ExpressionDeserializeEJSON::ExpressionDeserializeEJSON(ExpressionContext* const 
                      std::move(input),
                      std::move(onError),
                  }) {
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
 }
 
 intrusive_ptr<Expression> ExpressionDeserializeEJSON::parse(ExpressionContext* const expCtx,
@@ -5267,7 +5267,7 @@ ExpressionHash::ExpressionHash(ExpressionContext* const expCtx,
                                boost::intrusive_ptr<Expression> input,
                                boost::intrusive_ptr<Expression> algorithm)
     : Expression(expCtx, {std::move(input), std::move(algorithm)}) {
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
 }
 
 intrusive_ptr<Expression> ExpressionHash::parse(ExpressionContext* const expCtx,
@@ -5377,7 +5377,7 @@ ExpressionEncTextSearch::ExpressionEncTextSearch(ExpressionContext* const expCtx
                 value.getType() == BSONType::string);
     }
 
-    expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+    expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
 }
 
 const ExpressionFieldPath& ExpressionEncTextSearch::getInput() const {

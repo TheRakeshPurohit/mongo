@@ -60,7 +60,7 @@ public:
                                                boost::intrusive_ptr<Expression> input,
                                                PercentileMethodEnum method)
         : Expression(expCtx, {input}), _ps(ps), _input(input), _method(method) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     const char* getOpName() const {

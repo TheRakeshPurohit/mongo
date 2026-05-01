@@ -704,14 +704,14 @@ class ExpressionFromAccumulator
 public:
     explicit ExpressionFromAccumulator(ExpressionContext* const expCtx)
         : ExpressionVariadic<ExpressionFromAccumulator<AccumulatorState>>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     ExpressionFromAccumulator(ExpressionContext* const expCtx,
                               Expression::ExpressionVector&& children)
         : ExpressionVariadic<ExpressionFromAccumulator<AccumulatorState>>(expCtx,
                                                                           std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     Value evaluate(const Document& root, Variables* variables) const final;
@@ -754,7 +754,7 @@ public:
                                         boost::intrusive_ptr<Expression> n,
                                         boost::intrusive_ptr<Expression> output)
         : Expression(expCtx, {n, output}), _n(n), _output(output) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     const char* getOpName() const {
@@ -948,11 +948,11 @@ class ExpressionAllElementsTrue final : public ExpressionFixedArity<ExpressionAl
 public:
     explicit ExpressionAllElementsTrue(ExpressionContext* const expCtx)
         : ExpressionFixedArity<ExpressionAllElementsTrue, 1>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
     ExpressionAllElementsTrue(ExpressionContext* const expCtx, ExpressionVector&& children)
         : ExpressionFixedArity<ExpressionAllElementsTrue, 1>(expCtx, std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     Value evaluate(const Document& root, Variables* variables) const final;
@@ -1072,12 +1072,12 @@ class ExpressionArrayElemAt final : public ExpressionFixedArity<ExpressionArrayE
 public:
     explicit ExpressionArrayElemAt(ExpressionContext* const expCtx)
         : ExpressionFixedArity<ExpressionArrayElemAt, 2>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     ExpressionArrayElemAt(ExpressionContext* const expCtx, ExpressionVector&& children)
         : ExpressionFixedArity<ExpressionArrayElemAt, 2>(expCtx, std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     Value evaluate(const Document& root, Variables* variables) const final;
@@ -1100,12 +1100,12 @@ class ExpressionFirst final : public ExpressionFixedArity<ExpressionFirst, 1> {
 public:
     explicit ExpressionFirst(ExpressionContext* const expCtx)
         : ExpressionFixedArity<ExpressionFirst, 1>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     ExpressionFirst(ExpressionContext* const expCtx, ExpressionVector&& children)
         : ExpressionFixedArity<ExpressionFirst, 1>(expCtx, std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     Value evaluate(const Document& root, Variables* variables) const final;
@@ -1128,12 +1128,12 @@ class ExpressionLast final : public ExpressionFixedArity<ExpressionLast, 1> {
 public:
     explicit ExpressionLast(ExpressionContext* const expCtx)
         : ExpressionFixedArity<ExpressionLast, 1>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     ExpressionLast(ExpressionContext* const expCtx, ExpressionVector&& children)
         : ExpressionFixedArity<ExpressionLast, 1>(expCtx, std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     Value evaluate(const Document& root, Variables* variables) const final;
@@ -2280,12 +2280,12 @@ class ExpressionIndexOfArray : public ExpressionRangedArity<ExpressionIndexOfArr
 public:
     explicit ExpressionIndexOfArray(ExpressionContext* const expCtx)
         : ExpressionRangedArity<ExpressionIndexOfArray, 2, 4>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     ExpressionIndexOfArray(ExpressionContext* const expCtx, ExpressionVector&& children)
         : ExpressionRangedArity<ExpressionIndexOfArray, 2, 4>(expCtx, std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     Value evaluate(const Document& root, Variables* variables) const override;
@@ -2480,11 +2480,11 @@ class ExpressionLog final : public ExpressionFixedArity<ExpressionLog, 2> {
 public:
     explicit ExpressionLog(ExpressionContext* const expCtx)
         : ExpressionFixedArity<ExpressionLog, 2>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
     ExpressionLog(ExpressionContext* const expCtx, ExpressionVector&& children)
         : ExpressionFixedArity<ExpressionLog, 2>(expCtx, std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     Value evaluate(const Document& root, Variables* variables) const final;
@@ -3111,7 +3111,7 @@ public:
           _valueVar(valueVar),
           _idxName(std::move(idxName)),
           _idxId(idxId) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     Value evaluate(const Document& root, Variables* variables) const final;
@@ -3239,7 +3239,7 @@ public:
                          boost::intrusive_ptr<Expression> replacement)
         : ExpressionReplaceBase(expCtx, input, find, replacement) {
         // TODO(SERVER-108244): Support $replaceOne with regex in SBE.
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     static boost::intrusive_ptr<Expression> parse(ExpressionContext* expCtx,
@@ -3276,7 +3276,7 @@ public:
                          boost::intrusive_ptr<Expression> find,
                          boost::intrusive_ptr<Expression> replacement)
         : ExpressionReplaceBase(expCtx, input, find, replacement) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     static boost::intrusive_ptr<Expression> parse(ExpressionContext* expCtx,
@@ -3359,7 +3359,7 @@ public:
         : ExpressionVariadic<ExpressionSetEquals>(expCtx, std::move(children)) {
         if (_children.size() > kMaxArgumentCountForSwitchAndSetExprForSbe &&
             !feature_flags::gFeatureFlagSbeUpgradeBinaryTrees.checkEnabled()) {
-            expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+            expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
         }
     }
 
@@ -3400,7 +3400,7 @@ public:
         : ExpressionVariadic<ExpressionSetIntersection>(expCtx, std::move(children)) {
         if (_children.size() > kMaxArgumentCountForSwitchAndSetExprForSbe &&
             !feature_flags::gFeatureFlagSbeUpgradeBinaryTrees.checkEnabled()) {
-            expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+            expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
         }
     }
 
@@ -3472,7 +3472,7 @@ public:
         : ExpressionVariadic<ExpressionSetUnion>(expCtx, std::move(children)) {
         if (_children.size() > kMaxArgumentCountForSwitchAndSetExprForSbe &&
             !feature_flags::gFeatureFlagSbeUpgradeBinaryTrees.checkEnabled()) {
-            expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+            expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
         }
     }
 
@@ -3509,7 +3509,7 @@ public:
                                bool score,
                                ExpressionVector&& children)
         : Expression(expCtx, std::move(children)), _score(score) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     virtual const char* getOpName() const = 0;
@@ -3632,12 +3632,12 @@ class ExpressionSize final : public ExpressionFixedArity<ExpressionSize, 1> {
 public:
     explicit ExpressionSize(ExpressionContext* const expCtx)
         : ExpressionFixedArity<ExpressionSize, 1>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     ExpressionSize(ExpressionContext* const expCtx, ExpressionVector&& children)
         : ExpressionFixedArity<ExpressionSize, 1>(expCtx, std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     Value evaluate(const Document& root, Variables* variables) const final;
@@ -3732,11 +3732,11 @@ class ExpressionSlice final : public ExpressionRangedArity<ExpressionSlice, 2, 3
 public:
     explicit ExpressionSlice(ExpressionContext* const expCtx)
         : ExpressionRangedArity<ExpressionSlice, 2, 3>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
     ExpressionSlice(ExpressionContext* const expCtx, ExpressionVector&& children)
         : ExpressionRangedArity<ExpressionSlice, 2, 3>(expCtx, std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     Value evaluate(const Document& root, Variables* variables) const final;
@@ -4002,14 +4002,14 @@ class ExpressionInternalFindAllValuesAtPath final
 public:
     explicit ExpressionInternalFindAllValuesAtPath(ExpressionContext* expCtx)
         : ExpressionFixedArity<ExpressionInternalFindAllValuesAtPath, 1>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     explicit ExpressionInternalFindAllValuesAtPath(ExpressionContext* expCtx,
                                                    ExpressionVector&& children)
         : ExpressionFixedArity<ExpressionInternalFindAllValuesAtPath, 1>(expCtx,
                                                                          std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
     Value evaluate(const Document& root, Variables* variables) const final;
     const char* getOpName() const override {
@@ -4079,11 +4079,11 @@ class ExpressionSplit final : public ExpressionFixedArity<ExpressionSplit, 2> {
 public:
     explicit ExpressionSplit(ExpressionContext* const expCtx)
         : ExpressionFixedArity<ExpressionSplit, 2>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
     ExpressionSplit(ExpressionContext* const expCtx, ExpressionVector&& children)
         : ExpressionFixedArity<ExpressionSplit, 2>(expCtx, std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     Value evaluate(const Document& root, Variables* variables) const final;
@@ -4228,12 +4228,12 @@ class ExpressionBinarySize final : public ExpressionFixedArity<ExpressionBinaryS
 public:
     ExpressionBinarySize(ExpressionContext* const expCtx)
         : ExpressionFixedArity<ExpressionBinarySize, 1>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     ExpressionBinarySize(ExpressionContext* const expCtx, ExpressionVector&& children)
         : ExpressionFixedArity<ExpressionBinarySize, 1>(expCtx, std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     Value evaluate(const Document& root, Variables* variables) const final;
@@ -4314,7 +4314,7 @@ public:
         uassert(40068, "$switch requires at least one branch", numBranches() >= 1);
         if (_children.size() > kMaxArgumentCountForSwitchAndSetExprForSbe &&
             !feature_flags::gFeatureFlagSbeUpgradeBinaryTrees.checkEnabled()) {
-            expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+            expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
         }
     }
 
@@ -4525,12 +4525,12 @@ class ExpressionType final : public ExpressionFixedArity<ExpressionType, 1> {
 public:
     explicit ExpressionType(ExpressionContext* const expCtx)
         : ExpressionFixedArity<ExpressionType, 1>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     ExpressionType(ExpressionContext* const expCtx, ExpressionVector&& children)
         : ExpressionFixedArity<ExpressionType, 1>(expCtx, std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     Value evaluate(const Document& root, Variables* variables) const final;
@@ -4553,12 +4553,12 @@ class ExpressionSubtype final : public ExpressionFixedArity<ExpressionSubtype, 1
 public:
     explicit ExpressionSubtype(ExpressionContext* const expCtx)
         : ExpressionFixedArity<ExpressionSubtype, 1>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     ExpressionSubtype(ExpressionContext* const expCtx, ExpressionVector&& children)
         : ExpressionFixedArity<ExpressionSubtype, 1>(expCtx, std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     Value evaluate(const Document& root, Variables* variables) const final;
@@ -4737,7 +4737,7 @@ public:
           _defaults(std::move(defaults)) {
         if (_children.size() > kMaxArgumentCountForSwitchAndSetExprForSbe &&
             !feature_flags::gFeatureFlagSbeUpgradeBinaryTrees.checkEnabled()) {
-            expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+            expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
         }
     }
 
@@ -5210,7 +5210,7 @@ public:
     ExpressionToHashedIndexKey(ExpressionContext* const expCtx,
                                boost::intrusive_ptr<Expression> inputExpression)
         : Expression(expCtx, {inputExpression}) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     static boost::intrusive_ptr<Expression> parse(ExpressionContext* expCtx,
@@ -5572,7 +5572,7 @@ public:
                        boost::intrusive_ptr<Expression> field,
                        boost::intrusive_ptr<Expression> input)
         : Expression(expCtx, {std::move(field), std::move(input)}) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     Value serialize(const SerializationOptions& options = {}) const final;
@@ -5625,7 +5625,7 @@ public:
                        boost::intrusive_ptr<Expression> value)
         : Expression(expCtx, {std::move(field), std::move(input), std::move(value)}),
           _fieldName(getValidFieldName(_children[_kField])) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     Value serialize(const SerializationOptions& options = {}) const final;
@@ -5773,12 +5773,12 @@ public:
 
     explicit ExpressionBitAnd(ExpressionContext* const expCtx)
         : ExpressionBitwise<ExpressionBitAnd>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     ExpressionBitAnd(ExpressionContext* const expCtx, ExpressionVector&& children)
         : ExpressionBitwise<ExpressionBitAnd>(expCtx, std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     void acceptVisitor(ExpressionMutableVisitor* visitor) final {
@@ -5808,12 +5808,12 @@ public:
 
     explicit ExpressionBitOr(ExpressionContext* const expCtx)
         : ExpressionBitwise<ExpressionBitOr>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     ExpressionBitOr(ExpressionContext* const expCtx, ExpressionVector&& children)
         : ExpressionBitwise<ExpressionBitOr>(expCtx, std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
     void acceptVisitor(ExpressionMutableVisitor* visitor) final {
         return visitor->visit(this);
@@ -5842,12 +5842,12 @@ public:
 
     explicit ExpressionBitXor(ExpressionContext* const expCtx)
         : ExpressionBitwise<ExpressionBitXor>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     ExpressionBitXor(ExpressionContext* const expCtx, ExpressionVector&& children)
         : ExpressionBitwise<ExpressionBitXor>(expCtx, std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     void acceptVisitor(ExpressionMutableVisitor* visitor) final {
@@ -5867,11 +5867,11 @@ class ExpressionBitNot final : public ExpressionSingleNumericArg<ExpressionBitNo
 public:
     explicit ExpressionBitNot(ExpressionContext* const expCtx)
         : ExpressionSingleNumericArg<ExpressionBitNot>(expCtx) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
     explicit ExpressionBitNot(ExpressionContext* const expCtx, ExpressionVector&& children)
         : ExpressionSingleNumericArg<ExpressionBitNot>(expCtx, std::move(children)) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     Value evaluate(const Document& root, Variables* variables) const final;
@@ -5939,7 +5939,7 @@ public:
                                      boost::intrusive_ptr<Expression> input,
                                      boost::intrusive_ptr<Expression> collation)
         : Expression(expCtx, {input, collation}) {
-        expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+        expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
     }
 
     static boost::intrusive_ptr<Expression> parse(ExpressionContext* expCtx,

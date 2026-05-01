@@ -344,15 +344,13 @@ intrusive_ptr<DocumentSource> DocumentSourceInternalSetWindowFields::optimize() 
         // the previous SBE compatibility value. See the optimize() function for $group for a more
         // detailed explanation.
         auto expCtx = _outputFields[0].expr->expCtx();
-        auto origSbeCompatibility = expCtx->getSbeCompatibility();
-        expCtx->setSbeCompatibility(SbeCompatibility::noRequirements);
+        TemporarySbeCompatibilityGuard guard(expCtx, SbeCompatibility::noRequirements);
 
         for (auto&& outputField : _outputFields) {
             outputField.expr->optimize();
         }
 
         _sbeCompatibility = std::min(_sbeCompatibility, expCtx->getSbeCompatibility());
-        expCtx->setSbeCompatibility(origSbeCompatibility);
     }
     return this;
 }

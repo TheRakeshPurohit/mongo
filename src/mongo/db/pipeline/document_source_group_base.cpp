@@ -125,24 +125,24 @@ boost::intrusive_ptr<DocumentSource> DocumentSourceGroupBase::optimize() {
     // call.
     auto& idExpressions = _groupProcessor->getMutableIdExpressions();
     auto expCtx = idExpressions[0]->getExpressionContext();
-    auto origSbeCompatibility = expCtx->getSbeCompatibility();
-    expCtx->setSbeCompatibility(SbeCompatibility::noRequirements);
+    {
+        TemporarySbeCompatibilityGuard guard(expCtx, SbeCompatibility::noRequirements);
 
-    // TODO: If all idExpressions are ExpressionConstants after optimization, then we know
-    // there will be only one group. We should take advantage of that to avoid going through the
-    // hash table.
-    for (size_t i = 0; i < idExpressions.size(); i++) {
-        idExpressions[i] = idExpressions[i]->optimize();
+        // TODO SERVER-123363: If all idExpressions are ExpressionConstants after optimization,
+        // then we know there will be only one group. We should take advantage of that to avoid
+        // going through the hash table.
+        for (size_t i = 0; i < idExpressions.size(); i++) {
+            idExpressions[i] = idExpressions[i]->optimize();
+        }
+
+        auto& accumulatedFields = _groupProcessor->getMutableAccumulationStatements();
+        for (auto& accumulatedField : accumulatedFields) {
+            accumulatedField.expr.initializer = accumulatedField.expr.initializer->optimize();
+            accumulatedField.expr.argument = accumulatedField.expr.argument->optimize();
+        }
+
+        _sbeCompatibility = std::min(_sbeCompatibility, expCtx->getSbeCompatibility());
     }
-
-    auto& accumulatedFields = _groupProcessor->getMutableAccumulationStatements();
-    for (auto& accumulatedField : accumulatedFields) {
-        accumulatedField.expr.initializer = accumulatedField.expr.initializer->optimize();
-        accumulatedField.expr.argument = accumulatedField.expr.argument->optimize();
-    }
-
-    _sbeCompatibility = std::min(_sbeCompatibility, expCtx->getSbeCompatibility());
-    expCtx->setSbeCompatibility(origSbeCompatibility);
 
     return this;
 }

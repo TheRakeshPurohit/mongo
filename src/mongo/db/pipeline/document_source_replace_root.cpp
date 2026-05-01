@@ -222,9 +222,7 @@ REGISTER_DOCUMENT_SOURCE_WITH_STAGE_PARAMS_DEFAULT(replaceRoot,
 intrusive_ptr<DocumentSource> DocumentSourceReplaceRoot::createFromBson(
     BSONElement elem, const intrusive_ptr<ExpressionContext>& expCtx) {
     const auto stageName = elem.fieldNameStringData();
-    SbeCompatibility originalSbeCompatibility =
-        expCtx->sbeCompatibilityExchange(SbeCompatibility::noRequirements);
-    ON_BLOCK_EXIT([&] { expCtx->setSbeCompatibility(originalSbeCompatibility); });
+    TemporarySbeCompatibilityGuard guard(expCtx.get(), SbeCompatibility::noRequirements);
     auto newRootExpression = [&]() {
         if (stageName == kAliasNameReplaceWith) {
             return Expression::parseOperand(expCtx.get(), elem, expCtx->variablesParseState);

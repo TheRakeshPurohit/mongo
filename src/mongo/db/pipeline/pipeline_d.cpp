@@ -1034,7 +1034,7 @@ StatusWith<std::unique_ptr<CanonicalQuery>> createCanonicalQuery(
             // The $match stage manages its own state for SBE compatibility without modifying the
             // ExpressionContext. Instead of re-parsing the MatchExpression to set the
             // compatibility we manually set it here.
-            expCtx->setSbeCompatibility(leadingMatch->sbeCompatibility());
+            expCtx->overrideSbeCompatibility(leadingMatch->sbeCompatibility());
             tassert(8897900,
                     "Expected non-empty query for pushing down leading $match stage",
                     !queryObj.isEmpty());
@@ -1048,7 +1048,7 @@ StatusWith<std::unique_ptr<CanonicalQuery>> createCanonicalQuery(
             // Reset the 'sbeCompatible' flag before canonicalizing the 'findCommand' to potentially
             // allow SBE to execute the portion of the query that's pushed down, even if the portion
             // of the query that is not pushed down contains expressions not supported by SBE.
-            expCtx->setSbeCompatibility(SbeCompatibility::noRequirements);
+            expCtx->overrideSbeCompatibility(SbeCompatibility::noRequirements);
             return uassertStatusOK(parsed_find_command::parse(
                 expCtx,
                 ParsedFindCommandParams{

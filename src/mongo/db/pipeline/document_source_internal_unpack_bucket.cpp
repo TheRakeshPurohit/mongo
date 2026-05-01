@@ -862,7 +862,7 @@ boost::intrusive_ptr<DocumentSource> DocumentSourceInternalUnpackBucket::createF
                                   << " field must be a bool, got: " << elem.type(),
                     elem.type() == BSONType::boolean);
             if (elem.boolean() == false) {
-                expCtx->setSbeCompatibility(SbeCompatibility::notCompatible);
+                expCtx->capSbeCompatibility(SbeCompatibility::notCompatible);
                 sbeCompatible = false;
             }
         } else {
@@ -1123,23 +1123,23 @@ void DocumentSourceInternalUnpackBucket::setEventFilter(BSONObj eventFilterBson,
     // than tracking the specific exprs, we temporarily reset the context to be fully SBE
     // compatible and check after parsing if the '_eventFilter' made the unpack stage
     // incompatible.
-    auto originalSbeCompatibility = getExpCtx()->getSbeCompatibility();
-    getExpCtx()->setSbeCompatibility(SbeCompatibility::noRequirements);
+    {
+        TemporarySbeCompatibilityGuard guard(getExpCtx().get(), SbeCompatibility::noRequirements);
 
-    _sharedState->_eventFilter =
-        uassertStatusOK(MatchExpressionParser::parse(_eventFilterBson,
-                                                     getExpCtx(),
-                                                     ExtensionsCallbackNoop(),
-                                                     Pipeline::kAllowedMatcherFeatures));
-    if (shouldOptimize) {
-        _sharedState->_eventFilter = optimizeMatchExpression(std::move(_sharedState->_eventFilter),
-                                                             /* enableSimplification */ false);
+        _sharedState->_eventFilter =
+            uassertStatusOK(MatchExpressionParser::parse(_eventFilterBson,
+                                                         getExpCtx(),
+                                                         ExtensionsCallbackNoop(),
+                                                         Pipeline::kAllowedMatcherFeatures));
+        if (shouldOptimize) {
+            _sharedState->_eventFilter =
+                optimizeMatchExpression(std::move(_sharedState->_eventFilter),
+                                        /* enableSimplification */ false);
+        }
+        _isEventFilterSbeCompatible.emplace(getExpCtx()->getSbeCompatibility());
     }
-    _isEventFilterSbeCompatible.emplace(getExpCtx()->getSbeCompatibility());
-
-    // Reset the sbeCompatibility taking _eventFilter into account.
-    getExpCtx()->setSbeCompatibility(
-        std::min(originalSbeCompatibility, _isEventFilterSbeCompatible.get()));
+    // Propagate any incompatibility introduced by the event filter back into the context.
+    getExpCtx()->capSbeCompatibility(_isEventFilterSbeCompatible.get());
 
     _eventFilterDeps = DepsTracker();
     dependency_analysis::addDependencies(_sharedState->_eventFilter.get(), &_eventFilterDeps);
@@ -1276,22 +1276,29 @@ DocumentSourceInternalUnpackBucket::rewriteGroupStage(DocumentSourceContainer::i
     // exprs, we temporarily reset the context to be fully SBE compatible and check later if any of
     // the exprs created by the rewrite mark it as incompatible, so that we can transfer the flag
     // onto the group.
-    const SbeCompatibility origSbeCompat = getExpCtx()->getSbeCompatibility();
-    getExpCtx()->setSbeCompatibility(SbeCompatibility::noRequirements);
-
-    // We destruct 'this' object when we replace it with the new group, so the guard has to capture
-    // the context's intrusive pointer by value.
-    const ScopeGuard guard([=, ctx = getExpCtx()] {
-        ctx->setSbeCompatibility(std::min(origSbeCompat, ctx->getSbeCompatibility()));
-    });
+    //
+    // We destruct 'this' object when we replace it with the new group, so we capture the context's
+    // intrusive pointer before that happens. 'propagateMeasured' is constructed before 'sbeGuard'
+    // so it destructs AFTER 'sbeGuard' restores the original value — giving us
+    // min(original, 'measured').
+    //
+    // 'measured' is needed as an explicit snapshot rather than re-reading 'expCtx' in the lambda:
+    // by the time 'propagateMeasured' fires, 'sbeGuard' has already restored 'expCtx' to its
+    // original value, so reading the SBE compatibility off 'expCtx' at that point would yield the
+    // original (not the measured) value and the cap would degenerate to a no-op. We assign
+    // 'measured' below at the point where 'expCtx' still holds the post-rewrite value.
+    auto expCtx = getExpCtx();
+    SbeCompatibility measured = SbeCompatibility::noRequirements;
+    const ScopeGuard propagateMeasured(
+        [&measured, expCtx] { expCtx->capSbeCompatibility(measured); });
+    TemporarySbeCompatibilityGuard sbeGuard(expCtx.get(), SbeCompatibility::noRequirements);
 
     // The computed min/max for each bucket uses the default collation. If the collation of the
     // query doesn't match the default we cannot rely on the computed values as they might differ
     // (e.g. numeric and lexicographic collations compare "5" and "10" in opposite order).
     // NB: Unfortuntealy, this means we have to forgo the optimization even if the source field is
     // numeric and not affected by the collation as we cannot know the data type until runtime.
-    if (getExpCtx()->getCollationMatchesDefault() ==
-        ExpressionContextCollationMatchesDefault::kNo) {
+    if (expCtx->getCollationMatchesDefault() == ExpressionContextCollationMatchesDefault::kNo) {
         return {};
     }
 
@@ -1302,7 +1309,7 @@ DocumentSourceInternalUnpackBucket::rewriteGroupStage(DocumentSourceContainer::i
 
     const auto& idFieldExpressions = groupPtr->getIdExpressions();
     const auto& idFieldNames = groupPtr->getIdFieldNames();
-    auto rewrittenIdExpression = rewriteGroupByField(getExpCtx(),
+    auto rewrittenIdExpression = rewriteGroupByField(expCtx,
                                                      idFieldExpressions,
                                                      idFieldNames,
                                                      _sharedState->_bucketUnpacker,
@@ -1321,12 +1328,12 @@ DocumentSourceInternalUnpackBucket::rewriteGroupStage(DocumentSourceContainer::i
         // into implementing them). $count is desugared to {$sum: 1}.
         std::unique_ptr<AccumulationExpression> accExpr;
         if (op == "$min" || op == "$max") {
-            accExpr = rewriteMinMaxGroupAccm(getExpCtx(), stmt, _sharedState->_bucketUnpacker);
+            accExpr = rewriteMinMaxGroupAccm(expCtx, stmt, _sharedState->_bucketUnpacker);
             if (!accExpr) {
                 return {};
             }
         } else if (op == "$sum") {
-            accExpr = rewriteCountGroupAccm(getExpCtx().get(), stmt, _sharedState->_bucketUnpacker);
+            accExpr = rewriteCountGroupAccm(expCtx.get(), stmt, _sharedState->_bucketUnpacker);
             if (!accExpr) {
                 return {};
             }
@@ -1337,7 +1344,7 @@ DocumentSourceInternalUnpackBucket::rewriteGroupStage(DocumentSourceContainer::i
     }
 
     boost::intrusive_ptr<mongo::DocumentSourceGroup> newGroup =
-        DocumentSourceGroup::create(getExpCtx(),
+        DocumentSourceGroup::create(expCtx,
                                     rewrittenIdExpression,
                                     std::move(accumulationStatementsBucket),
                                     groupPtr->willBeMerged(),
@@ -1345,7 +1352,8 @@ DocumentSourceInternalUnpackBucket::rewriteGroupStage(DocumentSourceContainer::i
 
     // The exprs used in the rewritten group might or might not be supported by SBE, so we have to
     // transfer the state from the expr context onto the group.
-    newGroup->setSbeCompatibility(getExpCtx()->getSbeCompatibility());
+    measured = expCtx->getSbeCompatibility();
+    newGroup->setSbeCompatibility(measured);
 
     // Replace the current stage (DocumentSourceInternalUnpackBucket) and the following group stage
     // with the new group.
