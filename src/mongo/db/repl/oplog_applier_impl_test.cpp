@@ -6782,9 +6782,9 @@ class PreparedTxnSplitSizeMetadataTest : public PreparedTxnSplitTest {
 };
 
 TEST_F(PreparedTxnSplitSizeMetadataTest, SizeMetadataIsSummedAcrossSplits) {
-    // Use the actual pool size as the modulus so findDocIdWithSeparateWriterId guarantees
-    // the two docs hash to different writer buckets deterministically.
-    const int nWriters = _workerPool->getStats().options.maxThreads;
+    // Use a fixed large writer count so findDocIdWithSeparateWriterId reliably finds two
+    // doc IDs that hash to different buckets regardless of the actual thread pool size.
+    const int nWriters = 100;
     const int kDocID1 = 1001;
     const int kDocID2 =
         findDocIdWithSeparateWriterId(_opCtx.get(), _nss, *_uuid, kDocID1, nWriters);
