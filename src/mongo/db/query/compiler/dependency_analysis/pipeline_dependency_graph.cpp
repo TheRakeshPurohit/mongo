@@ -626,7 +626,10 @@ public:
             case FieldMatchType::kMissing:
                 // Check the <missing> field's metadata: if it's known to be BSON Missing, the
                 // field is definitely absent and cannot be an array. Otherwise, it's unknown.
-                return !_fields[fieldId].metadata.knownToBeMissing;
+                return !_fields[fieldId].metadata.knownToBeMissing ||
+                    // If the prefix can contain arrays, the rename source could still yield an
+                    // array even if the leaf is missing.
+                    canPrefixContainArrays(prefix);
             case FieldMatchType::kBaseDocument:
                 return _canPathBeArray(path);
         }
@@ -1146,7 +1149,10 @@ private:
                                 // A truly missing field cannot be an array. An unknown field
                                 // might be.
                                 metadata.canFieldBeArray =
-                                    !_fields[oldPathField].metadata.knownToBeMissing;
+                                    !_fields[oldPathField].metadata.knownToBeMissing ||
+                                    // If the prefix can contain arrays, the rename source could
+                                    // still yield an array even if the leaf is missing.
+                                    canPrefixContainArrays(prefix);
                                 break;
                             }
                             case FieldMatchType::kShadowed: {

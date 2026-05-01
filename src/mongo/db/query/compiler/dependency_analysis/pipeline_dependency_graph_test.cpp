@@ -1823,5 +1823,27 @@ TEST_F(PipelineDependencyGraphTest, LeafRedeclaredAsDottedPath) {
     });
 }
 
+TEST_F(PipelineDependencyGraphTest, MissingPathChecksPrefixArrayness) {
+    setPipeline(
+        "[{$project: {a: 1}},"
+        " {$set: {a: [1, 2, 3]}},"
+        " {$set: {'a.b': 1}}]");
+
+    runTest([&] { ASSERT_TRUE(graph->canPathBeArray(nullptr, "a.unknown")); });
+}
+
+TEST_F(PipelineDependencyGraphTest, MissingRenameChecksPrefixArrayness) {
+    setPipeline(
+        "[{$project: {a: 1}},"
+        " {$set: {a: [1, 2, 3]}},"
+        " {$set: {'a.b': 1}},"
+        " {$set: {y: '$a.unknown'}}]");
+
+    runTest([&] {
+        ASSERT_TRUE(graph->canPathBeArray(nullptr, "a"));
+        ASSERT_TRUE(graph->canPathBeArray(nullptr, "y"));
+    });
+}
+
 }  // namespace
 }  // namespace mongo::pipeline::dependency_graph
