@@ -1581,20 +1581,26 @@ void MultiIndexBlock::_writeStateToContainer(OperationContext* opCtx) const {
 
     static constexpr int64_t kResumeStateKey = 0;
 
-    WriteUnitOfWork wuow(opCtx);
-    auto& ru = *shard_role_details::getRecoveryUnit(opCtx);
-    std::span<const char> value(obj.objdata(), obj.objsize());
-    const bool keyExists = container.getCursor(ru)->find(kResumeStateKey).has_value();
-    auto status = keyExists
-        ? container_write::update(opCtx, ru, container, kResumeStateKey, value)
-        : container_write::insert(
-              opCtx, ru, container, kResumeStateKey, value, container::ExistingKeyPolicy::reject);
-    massertStatusOK(status.withContext(
-        str::stream() << "Index build: failed to write resumable state via container write. "
-                      << "buildUUID: " << _buildUUID << ", collectionUUID: " << _collectionUUID
-                      << ", details: " << obj.toString()));
+    writeConflictRetry(opCtx, "writeIndexBuildStateToContainer", NamespaceString::kEmpty, [&] {
+        WriteUnitOfWork wuow(opCtx);
+        auto& ru = *shard_role_details::getRecoveryUnit(opCtx);
+        std::span<const char> value(obj.objdata(), obj.objsize());
+        const bool keyExists = container.getCursor(ru)->find(kResumeStateKey).has_value();
+        auto status = keyExists
+            ? container_write::update(opCtx, ru, container, kResumeStateKey, value)
+            : container_write::insert(opCtx,
+                                      ru,
+                                      container,
+                                      kResumeStateKey,
+                                      value,
+                                      container::ExistingKeyPolicy::reject);
+        massertStatusOK(status.withContext(
+            str::stream() << "Index build: failed to write resumable state via container write. "
+                          << "buildUUID: " << _buildUUID << ", collectionUUID: " << _collectionUUID
+                          << ", details: " << obj.toString()));
 
-    wuow.commit();
+        wuow.commit();
+    });
 
     LOGV2_DEBUG(12558700,
                 1,
