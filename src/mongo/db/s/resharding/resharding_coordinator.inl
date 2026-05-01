@@ -562,7 +562,15 @@ ExecutorFuture<ReshardingCoordinatorDocument> ReshardingCoordinator::_runUntilRe
                            auto span = _startSpan(
                                telemetryCtx,
                                "ReshardingCoordinator::tellAllParticipantsReshardingReadyToCommit");
-                           _tellAllDonorsToRefresh(executor);
+                           if (resharding::gFeatureFlagReshardingNoRefreshApplyingAndBlockingWrites
+                                   .isEnabled(resharding::getVersionContextOrDefault(
+                                                  _forwardableOpMetadata),
+                                              serverGlobalParams.featureCompatibility
+                                                  .acquireFCVSnapshot())) {
+                               _notifyDonorsCriticalSectionStarted(executor);
+                           } else {
+                               _tellAllDonorsToRefresh(executor);
+                           }
                            if (resharding::gFeatureFlagReshardingSkipCloningAndApplyingIfApplicable
                                    .isEnabled(resharding::getVersionContextOrDefault(
                                                   _forwardableOpMetadata),
@@ -2183,6 +2191,19 @@ void ReshardingCoordinator::_tellAllDonorsToRefresh(
                                                                 _coordinatorDoc.getDonorShards(),
                                                                 **executor,
                                                                 _ctHolder->getAbortToken());
+}
+
+void ReshardingCoordinator::_notifyDonorsCriticalSectionStarted(
+    const std::shared_ptr<executor::ScopedTaskExecutor>& executor) {
+    auto opCtx = _makeOperationContext();
+    ShardsvrReshardDonorCriticalSectionStarted cmd(_coordinatorDoc.getReshardingUUID());
+    resharding::sendReshardingCommand(
+        opCtx.get(),
+        _getNewSession(opCtx.get()),
+        cmd,
+        _ctHolder->getAbortToken(),
+        executor,
+        resharding::extractShardIdsFromParticipantEntries(_coordinatorDoc.getDonorShards()));
 }
 
 void ReshardingCoordinator::_tellAllDonorsToStartChangeStreamsMonitor(

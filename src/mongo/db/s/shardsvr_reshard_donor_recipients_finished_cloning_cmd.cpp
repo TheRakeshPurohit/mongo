@@ -82,7 +82,7 @@ public:
                   "reshardingUUID"_attr = uuid());
 
             (*machine)->notifyAllRecipientsDoneCloning();
-            (*machine)->awaitInDonatingOplogEntries().get();
+            (*machine)->awaitInDonatingOplogEntries().get(opCtx);
         }
 
     private:

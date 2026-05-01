@@ -1,6 +1,10 @@
 /**
  * Tests that _flushReshardingStateChange command retries sharding metadata refresh on transient
  * errors until there is a failover.
+ *
+ * @tags: [
+ *   resource_intensive,
+ * ]
  */
 import {configureFailPoint} from "jstests/libs/fail_point_util.js";
 import {FeatureFlagUtil} from "jstests/libs/feature_flag_util.js";
@@ -157,6 +161,22 @@ function testStopRetryingOnFailover(st, {enableCloneNoRefresh}) {
             "refresh on failover " +
             tojsononeline({enableCloneNoRefresh}),
     );
+
+    // When all flush-disabling feature flags are enabled, the coordinator does not send
+    // _flushReshardingStateChange to any participant, making this test inapplicable.
+    const flushDisablingFeatureFlags = [
+        "ReshardingCloneNoRefresh",
+        "ReshardingInitNoRefresh",
+        "ReshardingNoRefreshApplyingAndBlockingWrites",
+        "ReshardingSkipCloningAndApplyingIfApplicable",
+    ];
+    if (flushDisablingFeatureFlags.every((flag) => FeatureFlagUtil.isPresentAndEnabled(st.s, flag))) {
+        jsTest.log(
+            "Skipping testStopRetryingOnFailover: all flush-disabling feature flags are " +
+                "enabled, _flushReshardingStateChange will not be sent to any participants.",
+        );
+        return;
+    }
 
     // Set up the collection to reshard.
     const dbName = "testDbStopRetrying";

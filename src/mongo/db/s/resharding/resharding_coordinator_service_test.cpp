@@ -2894,9 +2894,22 @@ TEST_F(ReshardingCoordinatorServiceTest, TransientErrorAfterCoordinatorDocRemove
     ASSERT_OK(coordinator->getCompletionFuture().getNoThrow());
 }
 
+TEST_F(ReshardingCoordinatorServiceTest, NoRefreshBlockingWritesWithFeatureFlag) {
+    RAIIServerParameterControllerForTest noRefreshFeatureFlagController(
+        "featureFlagReshardingNoRefreshApplyingAndBlockingWrites", true);
+    RAIIServerParameterControllerForTest initNoRefreshFeatureFlagController(
+        "featureFlagReshardingInitNoRefresh", true);
+    externalState()->throwUnrecoverableErrorIn(CoordinatorStateEnum::kBlockingWrites,
+                                               kTellAllDonorsToRefresh);
+
+    runReshardingToCompletion();
+}
+
 TEST_F(ReshardingCoordinatorServiceTest, NoRefreshApplyingWithFeatureFlag) {
     RAIIServerParameterControllerForTest noRefreshFeatureFlagController(
         "featureFlagReshardingNoRefreshApplyingAndBlockingWrites", true);
+    RAIIServerParameterControllerForTest initNoRefreshFeatureFlagController(
+        "featureFlagReshardingInitNoRefresh", true);
     externalState()->throwUnrecoverableErrorIn(CoordinatorStateEnum::kApplying,
                                                kTellAllDonorsToRefresh);
 

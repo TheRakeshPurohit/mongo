@@ -540,6 +540,12 @@ private:
     void _tellAllDonorsToRefresh(const std::shared_ptr<executor::ScopedTaskExecutor>& executor);
 
     /**
+     * Sends '_shardsvrReshardDonorCriticalSectionStarted' to all donor shards.
+     */
+    void _notifyDonorsCriticalSectionStarted(
+        const std::shared_ptr<executor::ScopedTaskExecutor>& executor);
+
+    /**
      * If verification is enabled, sends '_shardsvrReshardingDonorStartChangeStreamsMonitor' to all
      * donor shards.
      */

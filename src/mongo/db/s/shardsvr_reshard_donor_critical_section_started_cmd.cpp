@@ -71,16 +71,17 @@ public:
                 ReshardingDonorService,
                 ReshardingDonorService::DonorStateMachine,
                 ReshardingDonorDocument>(opCtx, uuid());
-            if (!machine) {
-                return;
-            }
+
+            uassert(ErrorCodes::IllegalOperation,
+                    str::stream() << "No resharding donor found with id " << uuid(),
+                    machine);
 
             LOGV2(12425400,
                   "Resharding donor received criticalSectionStarted command",
                   "reshardingUUID"_attr = uuid());
 
             (*machine)->notifyAllRecipientsDoneApplying();
-            (*machine)->awaitCriticalSectionAcquired().get();
+            (*machine)->awaitCriticalSectionAcquired().get(opCtx);
         }
 
     private:
