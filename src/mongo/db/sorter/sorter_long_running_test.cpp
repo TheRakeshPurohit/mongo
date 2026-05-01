@@ -70,7 +70,7 @@ using test::FileTraits;
 template <typename Traits>
 constexpr bool shouldSkipContainerBasedTestInDebugBuild() {
 #if defined(MONGO_CONFIG_DEBUG_BUILD)
-    return std::is_same_v<Traits, ContainerTraits>;
+    return std::is_same_v<Traits, ContainerTraits<>>;
 #else
     return false;
 #endif
@@ -454,10 +454,10 @@ private:
     boost::optional<Traits> _storage;
 };
 
-using SorterTypedTestTypes = ::testing::Types<FileTraits, ContainerTraits>;
+using SorterTypedTestTypes = ::testing::Types<FileTraits<>, ContainerTraits<>>;
 TYPED_TEST_SUITE(SorterTypedTest, SorterTypedTestTypes);
 
-using SorterFileTest = SorterTypedTest<FileTraits>;
+using SorterFileTest = SorterTypedTest<FileTraits<>>;
 
 template <typename TypeParam>
 class SorterTypedTestManualSpills : public SorterTypedTest<TypeParam> {

@@ -67,21 +67,21 @@ struct SpillStorageState {
     IWComparator comp{ASC};
 };
 
-inline std::unique_ptr<FileBasedSpiller<IntWrapper, IntWrapper, IWComparator>> makeFileSpiller(
+template <typename K = IntWrapper, typename V = IntWrapper, typename C = IWComparator>
+std::unique_ptr<FileBasedSpiller<K, V, C>> makeFileSpiller(
     const SortOptions& opts,
     const boost::filesystem::path& spillDir,
     SorterFileStats* fileStats,
     const SorterChecksumVersion checksumVersion = sorter::kLatestChecksumVersion,
     std::string storageIdentifier = "") {
     if (storageIdentifier.empty()) {
-        return std::make_unique<FileBasedSpiller<IntWrapper, IntWrapper, IWComparator>>(
-            spillDir,
-            fileStats,
-            /*dbName=*/boost::none,
-            checksumVersion,
-            testSpillingMinAvailableDiskSpaceBytes);
+        return std::make_unique<FileBasedSpiller<K, V, C>>(spillDir,
+                                                           fileStats,
+                                                           /*dbName=*/boost::none,
+                                                           checksumVersion,
+                                                           testSpillingMinAvailableDiskSpaceBytes);
     }
-    return std::make_unique<FileBasedSpiller<IntWrapper, IntWrapper, IWComparator>>(
+    return std::make_unique<FileBasedSpiller<K, V, C>>(
         std::make_shared<File>(spillDir / storageIdentifier, fileStats),
         spillDir,
         /*dbName=*/boost::none,
@@ -116,19 +116,22 @@ concept StorageTraits = requires(Traits& traits,
     { traits.iteratorSizeBytes() } -> std::same_as<std::size_t>;
 };
 
+template <typename K = IntWrapper, typename V = IntWrapper, typename C = IWComparator>
 struct FileTraits {
     static constexpr bool kHasFileStats = true;
     static constexpr int kEmptyStorageErrorCode = 16815;
     static constexpr int kCorruptedStorageErrorCode = 16817;
 
-    static std::shared_ptr<Spiller<IntWrapper, IntWrapper, IWComparator>> makeSpiller(
+    static std::shared_ptr<Spiller<K, V, C>> makeSpiller(
         const SortOptions& opts,
         const boost::filesystem::path& spillDir,
         const SorterChecksumVersion checksumVersion = sorter::kLatestChecksumVersion) {
-        return std::shared_ptr<Spiller<IntWrapper, IntWrapper, IWComparator>>(
-            makeFileSpiller(opts, spillDir, /*fileStats=*/nullptr, checksumVersion));
+        return std::shared_ptr<Spiller<K, V, C>>(
+            makeFileSpiller<K, V, C>(opts, spillDir, /*fileStats=*/nullptr, checksumVersion));
     }
 
+    // The helpers below are fixed to <IntWrapper, IntWrapper, IWComparator>; they only make
+    // sense on the default instantiation.
     static std::shared_ptr<Spiller<IntWrapper, IntWrapper, IWComparator>> makeSpillerForResume(
         const SortOptions& opts,
         const boost::filesystem::path& spillDir,
@@ -189,6 +192,7 @@ struct FileTraits {
     }
 };
 
+template <typename K = IntWrapper, typename V = IntWrapper, typename C = IWComparator>
 struct ContainerTraits {
     static constexpr bool kHasFileStats = false;
     static constexpr int kEmptyStorageErrorCode = 0;
@@ -203,11 +207,11 @@ struct ContainerTraits {
         _writerTable = _makeInternalRecordStore();
     }
 
-    std::shared_ptr<Spiller<IntWrapper, IntWrapper, IWComparator>> makeSpiller(
+    std::shared_ptr<Spiller<K, V, C>> makeSpiller(
         const SortOptions& opts,
         const boost::filesystem::path& spillDir,
         const SorterChecksumVersion checksumVersion = sorter::kLatestChecksumVersion) {
-        using ContainerSpiller = ContainerBasedSpiller<IntWrapper, IntWrapper, IWComparator>;
+        using ContainerSpiller = ContainerBasedSpiller<K, V, C>;
         struct SpillerOwner {
             std::shared_ptr<RecordStore> table;
             ContainerSpiller spiller;
@@ -233,10 +237,11 @@ struct ContainerTraits {
                 std::numeric_limits<int64_t>::max(),
                 testSpillingMinAvailableDiskSpaceBytes),
         });
-        return std::shared_ptr<Spiller<IntWrapper, IntWrapper, IWComparator>>(owner,
-                                                                              &owner->spiller);
+        return std::shared_ptr<Spiller<K, V, C>>(owner, &owner->spiller);
     }
 
+    // The helpers below are fixed to <IntWrapper, IntWrapper, IWComparator>; they only make
+    // sense on the default instantiation.
     static std::shared_ptr<Spiller<IntWrapper, IntWrapper, IWComparator>> makeSpillerForResume(
         const SortOptions& opts,
         const boost::filesystem::path& spillDir,

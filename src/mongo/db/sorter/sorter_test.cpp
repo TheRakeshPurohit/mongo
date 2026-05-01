@@ -231,10 +231,10 @@ public:
     RAIIServerParameterControllerForTest ffContainerWrites{"featureFlagContainerWrites", true};
 };
 
-using MakeFromExistingRangesTypes = ::testing::Types<FileTraits, ContainerTraits>;
+using MakeFromExistingRangesTypes = ::testing::Types<FileTraits<>, ContainerTraits<>>;
 TYPED_TEST_SUITE(MakeFromExistingRangesTest, MakeFromExistingRangesTypes);
 
-using SorterMakeFromExistingRangesFileBasedTypes = ::testing::Types<FileTraits>;
+using SorterMakeFromExistingRangesFileBasedTypes = ::testing::Types<FileTraits<>>;
 TYPED_TEST_SUITE(FileBasedMakeFromExistingRangesTest, SorterMakeFromExistingRangesFileBasedTypes);
 
 // Note that these tests use a spiller but do not exercise any of its behavior.
@@ -684,17 +684,17 @@ DEATH_TEST_F(FileBasedMakeFromExistingRangesDeathTest,
              CompleteReadReportsChecksumError,
              "Data read from disk does not match what was written to disk.") {
     unittest::TempDir spillDir = makeSpillDir();
-    auto state = FileTraits::makeSpillState(spillDir.path());
-    FileTraits::corruptSpillState(state);
+    auto state = FileTraits<>::makeSpillState(spillDir.path());
+    FileTraits<>::corruptSpillState(state);
     auto it = IWSorter::template makeFromExistingRanges<IWComparator>(
                   state.storageIdentifier,
                   state.ranges,
                   state.opts,
                   state.comp,
-                  FileTraits::makeSpillerForResume(state.opts,
-                                                   spillDir.path(),
-                                                   sorter::kLatestChecksumVersion,
-                                                   state.storageIdentifier),
+                  FileTraits<>::makeSpillerForResume(state.opts,
+                                                     spillDir.path(),
+                                                     sorter::kLatestChecksumVersion,
+                                                     state.storageIdentifier),
                   /*settings=*/{})
                   ->done();
     ASSERT_ITERATORS_EQUIVALENT(it, std::make_unique<IntIterator>(0, 10));
@@ -705,7 +705,7 @@ DEATH_TEST_F(FileBasedMakeFromExistingRangesDeathTest,
              CompleteReadReportsChecksumErrorFromIncorrectChecksumVersion,
              "Data read from disk does not match what was written to disk.") {
     unittest::TempDir spillDir = makeSpillDir();
-    auto state = FileTraits::makeSpillState(spillDir.path());
+    auto state = FileTraits<>::makeSpillState(spillDir.path());
     state.ranges[0].setChecksumVersion(boost::none);
     auto it = IWSorter::template makeFromExistingRanges<IWComparator>(
                   state.storageIdentifier,
@@ -725,79 +725,81 @@ DEATH_TEST_F(FileBasedMakeFromExistingRangesDeathTest,
 }
 }  // namespace
 
-// TODO SERVER-117316: Create a typed bounded sorter suite.
-class BoundedSorterTest : public unittest::Test {
+using Key = IntWrapper;
+struct Doc {
+    Key time;
+
+    bool operator==(const Doc& other) const {
+        return time == other.time;
+    }
+
+    void serializeForSorter(BufBuilder& buf) const {
+        time.serializeForSorter(buf);
+    }
+
+    struct SorterDeserializeSettings {};
+    static Doc deserializeForSorter(BufReader& buf, const SorterDeserializeSettings&) {
+        return {IntWrapper::deserializeForSorter(buf, {})};
+    }
+
+    int memUsageForSorter() const {
+        return sizeof(Doc);
+    }
+
+    Doc getOwned() const {
+        return *this;
+    }
+
+    void makeOwned() {}
+};
+struct ComparatorAsc {
+    int operator()(Key x, Key y) const {
+        return x - y;
+    }
+};
+struct ComparatorDesc {
+    int operator()(Key x, Key y) const {
+        return y - x;
+    }
+};
+struct BoundMakerAsc {
+    Key operator()(Key k, const Doc&) const {
+        return k - 10;
+    }
+    Document serialize(const SerializationOptions& opts = {}) const {
+        MONGO_UNREACHABLE;
+    }
+};
+struct BoundMakerDesc {
+    Key operator()(Key k, const Doc&) const {
+        return k + 10;
+    }
+    Document serialize(const SerializationOptions& opts = {}) const {
+        MONGO_UNREACHABLE;
+    }
+};
+struct NoBoundAsc {
+    Key operator()(Key k, const Doc&) const {
+        return -1'000'000'000;
+    }
+    Document serialize(const SerializationOptions& opts = {}) const {
+        MONGO_UNREACHABLE;
+    }
+};
+
+using S = BoundedSorterInterface<Key, Doc>;
+using SAsc = BoundedSorter<Key, Doc, ComparatorAsc, BoundMakerAsc>;
+using SAscNoBound = BoundedSorter<Key, Doc, ComparatorAsc, NoBoundAsc>;
+using SDesc = BoundedSorter<Key, Doc, ComparatorDesc, BoundMakerDesc>;
+
+class BoundedSorterTestBase : public ServiceContextMongoDTest {
+protected:
+    void SetUp() override {
+        ServiceContextMongoDTest::SetUp();
+        sorter = makeAsc({});
+    }
+
 public:
-    using Key = IntWrapper;
-    struct Doc {
-        Key time;
-
-        bool operator==(const Doc& other) const {
-            return time == other.time;
-        }
-
-        void serializeForSorter(BufBuilder& buf) const {
-            time.serializeForSorter(buf);
-        }
-
-        struct SorterDeserializeSettings {};  // unused
-        static Doc deserializeForSorter(BufReader& buf, const SorterDeserializeSettings&) {
-            return {IntWrapper::deserializeForSorter(buf, {})};
-        }
-
-        int memUsageForSorter() const {
-            return sizeof(Doc);
-        }
-
-        Doc getOwned() const {
-            return *this;
-        }
-
-        void makeOwned() {}
-    };
-    struct ComparatorAsc {
-        int operator()(Key x, Key y) const {
-            return x - y;
-        }
-    };
-    struct ComparatorDesc {
-        int operator()(Key x, Key y) const {
-            return y - x;
-        }
-    };
-    struct BoundMakerAsc {
-        Key operator()(Key k, const Doc&) const {
-            return k - 10;
-        }
-        Document serialize(const SerializationOptions& opts = {}) const {
-            MONGO_UNREACHABLE;
-        }
-    };
-    struct BoundMakerDesc {
-        Key operator()(Key k, const Doc&) const {
-            return k + 10;
-        }
-        Document serialize(const SerializationOptions& opts = {}) const {
-            MONGO_UNREACHABLE;
-        }
-    };
-    struct NoBoundAsc {
-        Key operator()(Key k, const Doc&) const {
-            return -1'000'000'000;
-        }
-        Document serialize(const SerializationOptions& opts = {}) const {
-            MONGO_UNREACHABLE;
-        }
-    };
-
-    using S = BoundedSorterInterface<Key, Doc>;
-    using SAsc = BoundedSorter<Key, Doc, ComparatorAsc, BoundMakerAsc>;
-    using SAscNoBound = BoundedSorter<Key, Doc, ComparatorAsc, NoBoundAsc>;
-    using SDesc = BoundedSorter<Key, Doc, ComparatorDesc, BoundMakerDesc>;
-
-    /**
-     * Feed the input into the sorter one-by-one, taking any output as soon as it's available.
-     */
     std::vector<Doc> sort(std::vector<Doc> input, int expectedSize = -1) {
         std::vector<Doc> output;
         auto push = [&](Doc doc) {
@@ -833,37 +835,73 @@ public:
 
     std::unique_ptr<S> makeAsc(
         SortOptions options,
-        std::shared_ptr<FileBasedSpiller<Key, Doc, ComparatorAsc>> spiller = nullptr,
+        std::shared_ptr<sorter::Spiller<Key, Doc, ComparatorAsc>> spiller = nullptr,
         bool checkInput = true) {
         return std::make_unique<SAsc>(
             options, ComparatorAsc{}, BoundMakerAsc{}, spiller, checkInput);
     }
     std::unique_ptr<S> makeAscNoBound(
         SortOptions options,
-        std::shared_ptr<FileBasedSpiller<Key, Doc, ComparatorAsc>> spiller = nullptr,
+        std::shared_ptr<sorter::Spiller<Key, Doc, ComparatorAsc>> spiller = nullptr,
         bool checkInput = true) {
         return std::make_unique<SAscNoBound>(
             options, ComparatorAsc{}, NoBoundAsc{}, spiller, checkInput);
     }
     std::unique_ptr<S> makeDesc(
         SortOptions options,
-        std::shared_ptr<FileBasedSpiller<Key, Doc, ComparatorDesc>> spiller = nullptr,
+        std::shared_ptr<sorter::Spiller<Key, Doc, ComparatorDesc>> spiller = nullptr,
         bool checkInput = true) {
         return std::make_unique<SDesc>(
             options, ComparatorDesc{}, BoundMakerDesc{}, spiller, checkInput);
     }
 
     SorterTracker sorterTracker;
-    std::unique_ptr<S> sorter = makeAsc({});
+    std::unique_ptr<S> sorter;
 };
-TEST_F(BoundedSorterTest, Empty) {
-    ASSERT(sorter->getState() == S::State::kWait);
 
-    sorter->done();
-    ASSERT(sorter->getState() == S::State::kDone);
+template <typename Traits>
+class BoundedSorterTest : public BoundedSorterTestBase {
+public:
+    Traits& storage() {
+        return *_storage;
+    }
+
+protected:
+    void SetUp() override {
+        BoundedSorterTestBase::SetUp();
+        if constexpr (std::is_constructible_v<Traits, ServiceContext::UniqueOperationContext>) {
+            _storage.emplace(this->makeOperationContext());
+        } else {
+            _storage.emplace();
+        }
+    }
+
+    void TearDown() override {
+        sorter.reset();
+        _storage.reset();
+        BoundedSorterTestBase::TearDown();
+    }
+
+private:
+    // TODO (SERVER-109578): Remove.
+    RAIIServerParameterControllerForTest _ffContainerWrites{"featureFlagContainerWrites", true};
+    boost::optional<Traits> _storage;
+};
+
+using BoundedSorterTraits =
+    ::testing::Types<FileTraits<Key, Doc, ComparatorAsc>, ContainerTraits<Key, Doc, ComparatorAsc>>;
+TYPED_TEST_SUITE(BoundedSorterTest, BoundedSorterTraits);
+
+using FileBasedBoundedSorterTest = BoundedSorterTestBase;
+
+TYPED_TEST(BoundedSorterTest, Empty) {
+    ASSERT(this->sorter->getState() == S::State::kWait);
+
+    this->sorter->done();
+    ASSERT(this->sorter->getState() == S::State::kDone);
 }
-TEST_F(BoundedSorterTest, Sorted) {
-    auto output = sort({
+TYPED_TEST(BoundedSorterTest, Sorted) {
+    auto output = this->sort({
         {0},
         {3},
         {10},
@@ -874,11 +912,11 @@ TEST_F(BoundedSorterTest, Sorted) {
         {15},
         {16},
     });
-    assertSorted(output);
+    this->assertSorted(output);
 }
 
-TEST_F(BoundedSorterTest, SortedExceptOne) {
-    auto output = sort({
+TYPED_TEST(BoundedSorterTest, SortedExceptOne) {
+    auto output = this->sort({
         {0},
         {3},
         {10},
@@ -890,11 +928,11 @@ TEST_F(BoundedSorterTest, SortedExceptOne) {
         {15},
         {16},
     });
-    assertSorted(output);
+    this->assertSorted(output);
 }
 
-TEST_F(BoundedSorterTest, AlmostSorted) {
-    auto output = sort({
+TYPED_TEST(BoundedSorterTest, AlmostSorted) {
+    auto output = this->sort({
         // 0 and 11 cannot swap.
         {0},
         {11},
@@ -907,10 +945,10 @@ TEST_F(BoundedSorterTest, AlmostSorted) {
         {15},
         {16},
     });
-    assertSorted(output);
+    this->assertSorted(output);
 }
 
-TEST_F(BoundedSorterTest, WrongInput) {
+TYPED_TEST(BoundedSorterTest, WrongInput) {
     std::vector<Doc> input = {
         {3},
         {4},
@@ -926,8 +964,8 @@ TEST_F(BoundedSorterTest, WrongInput) {
     };
 
     // Disable input order checking so we can see what happens.
-    sorter = makeAsc({}, /*spiller=*/nullptr, /*checkInput*/ false);
-    auto output = sort(input);
+    this->sorter = this->makeAsc({}, /*spiller=*/nullptr, /*checkInput*/ false);
+    auto output = this->sort(input);
     ASSERT_EQ(output.size(), 7);
 
     ASSERT_EQ(output[0].time, 3);
@@ -939,14 +977,14 @@ TEST_F(BoundedSorterTest, WrongInput) {
     ASSERT_EQ(output[6].time, 16);
 
     // Test that by default, bad input like this would be detected.
-    sorter = makeAsc({});
-    ASSERT(sorter->checkInput());
-    ASSERT_THROWS_CODE(sort(input), DBException, 6369910);
+    this->sorter = this->makeAsc({});
+    ASSERT(this->sorter->checkInput());
+    ASSERT_THROWS_CODE(this->sort(input), DBException, 6369910);
 }
 
-TEST_F(BoundedSorterTest, MemoryLimitsNoExtSortAllowed) {
+TYPED_TEST(BoundedSorterTest, MemoryLimitsNoExtSortAllowed) {
     auto options = SortOptions().MaxMemoryUsageBytes(16);
-    sorter = makeAsc(options);
+    this->sorter = this->makeAsc(options);
 
     std::vector<Doc> input = {
         {0},
@@ -961,22 +999,15 @@ TEST_F(BoundedSorterTest, MemoryLimitsNoExtSortAllowed) {
     };
 
     ASSERT_THROWS_CODE(
-        sort(input), DBException, ErrorCodes::QueryExceededMemoryLimitNoDiskUseAllowed);
+        this->sort(input), DBException, ErrorCodes::QueryExceededMemoryLimitNoDiskUseAllowed);
 }
 
-TEST_F(BoundedSorterTest, SpillSorted) {
+TYPED_TEST(BoundedSorterTest, SpillSorted) {
     unittest::TempDir spillDir = makeSpillDir();
-    auto options = SortOptions().MaxMemoryUsageBytes(16).Tracker(&sorterTracker);
-    std::shared_ptr<FileBasedSpiller<Key, Doc, ComparatorAsc>> spiller =
-        std::make_shared<FileBasedSpiller<Key, Doc, ComparatorAsc>>(
-            spillDir.path(),
-            /*fileStats=*/nullptr,
-            /*dbName=*/boost::none,
-            sorter::kLatestChecksumVersion,
-            testSpillingMinAvailableDiskSpaceBytes);
-    sorter = makeAsc(options, std::move(spiller));
+    auto options = SortOptions().MaxMemoryUsageBytes(16).Tracker(&this->sorterTracker);
+    this->sorter = this->makeAsc(options, this->storage().makeSpiller(options, spillDir.path()));
 
-    auto output = sort({
+    auto output = this->sort({
         {0},
         {3},
         {10},
@@ -987,24 +1018,17 @@ TEST_F(BoundedSorterTest, SpillSorted) {
         {15},
         {16},
     });
-    assertSorted(output);
+    this->assertSorted(output);
 
-    ASSERT_EQ(sorter->stats().spilledRanges(), 3);
+    ASSERT_EQ(this->sorter->stats().spilledRanges(), 3);
 }
 
-TEST_F(BoundedSorterTest, SpillSortedExceptOne) {
+TYPED_TEST(BoundedSorterTest, SpillSortedExceptOne) {
     unittest::TempDir spillDir = makeSpillDir();
     auto options = SortOptions().MaxMemoryUsageBytes(16);
-    std::shared_ptr<FileBasedSpiller<Key, Doc, ComparatorAsc>> spiller =
-        std::make_shared<FileBasedSpiller<Key, Doc, ComparatorAsc>>(
-            spillDir.path(),
-            /*fileStats=*/nullptr,
-            /*dbName=*/boost::none,
-            sorter::kLatestChecksumVersion,
-            testSpillingMinAvailableDiskSpaceBytes);
-    sorter = makeAsc(options, std::move(spiller));
+    this->sorter = this->makeAsc(options, this->storage().makeSpiller(options, spillDir.path()));
 
-    auto output = sort({
+    auto output = this->sort({
         {0},
         {3},
         {10},
@@ -1016,24 +1040,17 @@ TEST_F(BoundedSorterTest, SpillSortedExceptOne) {
         {15},
         {16},
     });
-    assertSorted(output);
+    this->assertSorted(output);
 
-    ASSERT_EQ(sorter->stats().spilledRanges(), 3);
+    ASSERT_EQ(this->sorter->stats().spilledRanges(), 3);
 }
 
-TEST_F(BoundedSorterTest, SpillAlmostSorted) {
+TYPED_TEST(BoundedSorterTest, SpillAlmostSorted) {
     unittest::TempDir spillDir = makeSpillDir();
-    auto options = SortOptions().MaxMemoryUsageBytes(16).Tracker(&sorterTracker);
-    std::shared_ptr<FileBasedSpiller<Key, Doc, ComparatorAsc>> spiller =
-        std::make_shared<FileBasedSpiller<Key, Doc, ComparatorAsc>>(
-            spillDir.path(),
-            /*fileStats=*/nullptr,
-            /*dbName=*/boost::none,
-            sorter::kLatestChecksumVersion,
-            testSpillingMinAvailableDiskSpaceBytes);
-    sorter = makeAsc(options, std::move(spiller));
+    auto options = SortOptions().MaxMemoryUsageBytes(16).Tracker(&this->sorterTracker);
+    this->sorter = this->makeAsc(options, this->storage().makeSpiller(options, spillDir.path()));
 
-    auto output = sort({
+    auto output = this->sort({
         // 0 and 11 cannot swap.
         {0},
         {11},
@@ -1046,12 +1063,12 @@ TEST_F(BoundedSorterTest, SpillAlmostSorted) {
         {15},
         {16},
     });
-    assertSorted(output);
+    this->assertSorted(output);
 
-    ASSERT_EQ(sorter->stats().spilledRanges(), 2);
+    ASSERT_EQ(this->sorter->stats().spilledRanges(), 2);
 }
 
-TEST_F(BoundedSorterTest, SpillWrongInput) {
+TYPED_TEST(BoundedSorterTest, SpillWrongInput) {
     unittest::TempDir spillDir = makeSpillDir();
     auto options = SortOptions().MaxMemoryUsageBytes(16);
 
@@ -1069,16 +1086,10 @@ TEST_F(BoundedSorterTest, SpillWrongInput) {
         {16},
     };
 
-    std::shared_ptr<FileBasedSpiller<Key, Doc, ComparatorAsc>> spiller1 =
-        std::make_shared<FileBasedSpiller<Key, Doc, ComparatorAsc>>(
-            spillDir.path(),
-            /*fileStats=*/nullptr,
-            /*dbName=*/boost::none,
-            sorter::kLatestChecksumVersion,
-            testSpillingMinAvailableDiskSpaceBytes);
     // Disable input order checking so we can see what happens.
-    sorter = makeAsc(options, std::move(spiller1), /*checkInput=*/false);
-    auto output = sort(input);
+    this->sorter = this->makeAsc(
+        options, this->storage().makeSpiller(options, spillDir.path()), /*checkInput=*/false);
+    auto output = this->sort(input);
     ASSERT_EQ(output.size(), 7);
 
     ASSERT_EQ(output[0].time, 3);
@@ -1089,35 +1100,21 @@ TEST_F(BoundedSorterTest, SpillWrongInput) {
     ASSERT_EQ(output[5].time, 15);
     ASSERT_EQ(output[6].time, 16);
 
-    ASSERT_EQ(sorter->stats().spilledRanges(), 2);
+    ASSERT_EQ(this->sorter->stats().spilledRanges(), 2);
 
 
-    std::shared_ptr<FileBasedSpiller<Key, Doc, ComparatorAsc>> spiller2 =
-        std::make_shared<FileBasedSpiller<Key, Doc, ComparatorAsc>>(
-            spillDir.path(),
-            /*fileStats=*/nullptr,
-            /*dbName=*/boost::none,
-            sorter::kLatestChecksumVersion,
-            testSpillingMinAvailableDiskSpaceBytes);
     // Test that by default, bad input like this would be detected.
-    sorter = makeAsc(options, std::move(spiller2));
-    ASSERT(sorter->checkInput());
-    ASSERT_THROWS_CODE(sort(input), DBException, 6369910);
+    this->sorter = this->makeAsc(options, this->storage().makeSpiller(options, spillDir.path()));
+    ASSERT(this->sorter->checkInput());
+    ASSERT_THROWS_CODE(this->sort(input), DBException, 6369910);
 }
 
-TEST_F(BoundedSorterTest, LimitNoSpill) {
+TYPED_TEST(BoundedSorterTest, LimitNoSpill) {
     unittest::TempDir spillDir = makeSpillDir();
-    auto options = SortOptions().MaxMemoryUsageBytes(40).Tracker(&sorterTracker).Limit(2);
-    std::shared_ptr<FileBasedSpiller<Key, Doc, ComparatorAsc>> spiller =
-        std::make_shared<FileBasedSpiller<Key, Doc, ComparatorAsc>>(
-            spillDir.path(),
-            /*fileStats=*/nullptr,
-            /*dbName=*/boost::none,
-            sorter::kLatestChecksumVersion,
-            testSpillingMinAvailableDiskSpaceBytes);
-    sorter = makeAsc(options, spiller);
+    auto options = SortOptions().MaxMemoryUsageBytes(40).Tracker(&this->sorterTracker).Limit(2);
+    this->sorter = this->makeAsc(options, this->storage().makeSpiller(options, spillDir.path()));
 
-    auto output = sort(
+    auto output = this->sort(
         {
             // 0 and 11 cannot swap.
             {0},
@@ -1132,27 +1129,20 @@ TEST_F(BoundedSorterTest, LimitNoSpill) {
             {16},
         },
         2);
-    assertSorted(output);
+    this->assertSorted(output);
     // Also check that the correct values made it into the top K.
     ASSERT_EQ(output[0].time, 0);
     ASSERT_EQ(output[1].time, 3);
 
-    ASSERT_EQ(sorter->stats().spilledRanges(), 0);
+    ASSERT_EQ(this->sorter->stats().spilledRanges(), 0);
 }
 
-TEST_F(BoundedSorterTest, LimitSpill) {
+TYPED_TEST(BoundedSorterTest, LimitSpill) {
     unittest::TempDir spillDir = makeSpillDir();
-    auto options = SortOptions().MaxMemoryUsageBytes(40).Tracker(&sorterTracker).Limit(3);
-    std::shared_ptr<FileBasedSpiller<Key, Doc, ComparatorAsc>> spiller =
-        std::make_shared<FileBasedSpiller<Key, Doc, ComparatorAsc>>(
-            spillDir.path(),
-            /*fileStats=*/nullptr,
-            /*dbName=*/boost::none,
-            sorter::kLatestChecksumVersion,
-            testSpillingMinAvailableDiskSpaceBytes);
-    sorter = makeAsc(options, std::move(spiller));
+    auto options = SortOptions().MaxMemoryUsageBytes(40).Tracker(&this->sorterTracker).Limit(3);
+    this->sorter = this->makeAsc(options, this->storage().makeSpiller(options, spillDir.path()));
 
-    auto output = sort(
+    auto output = this->sort(
         {
             // 0 and 11 cannot swap.
             {0},
@@ -1167,16 +1157,16 @@ TEST_F(BoundedSorterTest, LimitSpill) {
             {16},
         },
         3);
-    assertSorted(output);
+    this->assertSorted(output);
     // Also check that the correct values made it into the top K.
     ASSERT_EQ(output[0].time, 0);
     ASSERT_EQ(output[1].time, 3);
     ASSERT_EQ(output[2].time, 10);
 
-    ASSERT_EQ(sorter->stats().spilledRanges(), 1);
+    ASSERT_EQ(this->sorter->stats().spilledRanges(), 1);
 }
 
-TEST_F(BoundedSorterTest, ForceSpill) {
+TEST_F(FileBasedBoundedSorterTest, ForceSpill) {
     SorterFileStats fileStats(&sorterTracker);
     unittest::TempDir spillDir = makeSpillDir();
     auto options = SortOptions().MaxMemoryUsageBytes(100 * 1024 * 1024).Tracker(&sorterTracker);
@@ -1238,9 +1228,9 @@ TEST_F(BoundedSorterTest, ForceSpill) {
     ASSERT_LT(fileStats.bytesSpilled(), 1000);
 }
 
-TEST_F(BoundedSorterTest, DescSorted) {
-    sorter = makeDesc({});
-    auto output = sort({
+TYPED_TEST(BoundedSorterTest, DescSorted) {
+    this->sorter = this->makeDesc({});
+    auto output = this->sort({
         {16},
         {15},
         {14},
@@ -1251,13 +1241,13 @@ TEST_F(BoundedSorterTest, DescSorted) {
         {3},
         {0},
     });
-    assertSorted(output, /* ascending */ false);
+    this->assertSorted(output, /* ascending */ false);
 }
 
-TEST_F(BoundedSorterTest, DescSortedExceptOne) {
-    sorter = makeDesc({});
+TYPED_TEST(BoundedSorterTest, DescSortedExceptOne) {
+    this->sorter = this->makeDesc({});
 
-    auto output = sort({
+    auto output = this->sort({
 
         {16},
         {15},
@@ -1270,13 +1260,13 @@ TEST_F(BoundedSorterTest, DescSortedExceptOne) {
         {3},
         {0},
     });
-    assertSorted(output, /* ascending */ false);
+    this->assertSorted(output, /* ascending */ false);
 }
 
-TEST_F(BoundedSorterTest, DescAlmostSorted) {
-    sorter = makeDesc({});
+TYPED_TEST(BoundedSorterTest, DescAlmostSorted) {
+    this->sorter = this->makeDesc({});
 
-    auto output = sort({
+    auto output = this->sort({
         {16},
         {15},
         // 3 and 14 cannot swap.
@@ -1289,10 +1279,10 @@ TEST_F(BoundedSorterTest, DescAlmostSorted) {
         {11},
         {0},
     });
-    assertSorted(output, /* ascending */ false);
+    this->assertSorted(output, /* ascending */ false);
 }
 
-TEST_F(BoundedSorterTest, DescWrongInput) {
+TYPED_TEST(BoundedSorterTest, DescWrongInput) {
     std::vector<Doc> input = {
         {16},
         {14},
@@ -1308,8 +1298,8 @@ TEST_F(BoundedSorterTest, DescWrongInput) {
     };
 
     // Disable input order checking so we can see what happens.
-    sorter = makeDesc({}, /*spiller=*/nullptr, /*checkInput=*/false);
-    auto output = sort(input);
+    this->sorter = this->makeDesc({}, /*spiller=*/nullptr, /*checkInput=*/false);
+    auto output = this->sort(input);
     ASSERT_EQ(output.size(), 7);
 
     ASSERT_EQ(output[0].time, 16);
@@ -1321,95 +1311,95 @@ TEST_F(BoundedSorterTest, DescWrongInput) {
     ASSERT_EQ(output[6].time, 1);
 
     // Test that by default, bad input like this would be detected.
-    sorter = makeDesc({});
-    ASSERT(sorter->checkInput());
-    ASSERT_THROWS_CODE(sort(input), DBException, 6369910);
+    this->sorter = this->makeDesc({});
+    ASSERT(this->sorter->checkInput());
+    ASSERT_THROWS_CODE(this->sort(input), DBException, 6369910);
 }
 
-TEST_F(BoundedSorterTest, CompoundAsc) {
+TYPED_TEST(BoundedSorterTest, CompoundAsc) {
     {
-        auto output = sort({
+        auto output = this->sort({
             {1001},
             {1005},
             {1004},
             {1007},
         });
-        assertSorted(output);
+        this->assertSorted(output);
     }
 
     {
         // After restart(), the sorter accepts new input.
         // The new values are compared to each other, but not compared to any of the old values,
         // so it's fine for the new values to be smaller even though the sort is ascending.
-        sorter->restart();
-        auto output = sort({
+        this->sorter->restart();
+        auto output = this->sort({
             {1},
             {5},
             {4},
             {7},
         });
-        assertSorted(output);
+        this->assertSorted(output);
     }
 
     {
         // restart() can be called any number of times.
-        sorter->restart();
-        auto output = sort({
+        this->sorter->restart();
+        auto output = this->sort({
             {11},
             {15},
             {14},
             {17},
         });
-        assertSorted(output);
+        this->assertSorted(output);
     }
 }
 
-TEST_F(BoundedSorterTest, CompoundDesc) {
-    sorter = makeDesc({});
+TYPED_TEST(BoundedSorterTest, CompoundDesc) {
+    this->sorter = this->makeDesc({});
     {
-        auto output = sort({
+        auto output = this->sort({
             {1007},
             {1004},
             {1005},
             {1001},
         });
-        assertSorted(output, /* ascending */ false);
+        this->assertSorted(output, /* ascending */ false);
     }
 
     {
         // After restart(), the sorter accepts new input.
         // The new values are compared to each other, but not compared to any of the old values,
         // so it's fine for the new values to be smaller even though the sort is ascending.
-        sorter->restart();
-        auto output = sort({
+        this->sorter->restart();
+        auto output = this->sort({
             {7},
             {4},
             {5},
             {1},
         });
-        assertSorted(output, /* ascending */ false);
+        this->assertSorted(output, /* ascending */ false);
     }
 
     {
         // restart() can be called any number of times.
-        sorter->restart();
-        auto output = sort({
+        this->sorter->restart();
+        auto output = this->sort({
             {17},
             {14},
             {15},
             {11},
         });
-        assertSorted(output, /* ascending */ false);
+        this->assertSorted(output, /* ascending */ false);
     }
 }
 
-TEST_F(BoundedSorterTest, CompoundLimit) {
+TYPED_TEST(BoundedSorterTest, CompoundLimit) {
     // A limit applies to the entire sorter, not to each partition of a compound sort.
 
     // Example where the limit lands in the first partition.
-    sorter = makeAsc(SortOptions().Limit(2));
+    this->sorter = this->makeAsc(SortOptions().Limit(2));
     {
-        auto output = sort(
+        auto output = this->sort(
             {
                 {1001},
                 {1005},
@@ -1417,13 +1407,13 @@ TEST_F(BoundedSorterTest, CompoundLimit) {
                 {1007},
             },
             2);
-        assertSorted(output);
+        this->assertSorted(output);
         // Also check that the correct values made it into the top K.
         ASSERT_EQ(output[0].time, 1001);
         ASSERT_EQ(output[1].time, 1004);
 
-        sorter->restart();
-        output = sort(
+        this->sorter->restart();
+        output = this->sort(
             {
                 {1},
                 {5},
@@ -1432,8 +1422,8 @@ TEST_F(BoundedSorterTest, CompoundLimit) {
             },
             0);
 
-        sorter->restart();
-        output = sort(
+        this->sorter->restart();
+        output = this->sort(
             {
                 {11},
                 {15},
@@ -1444,18 +1434,18 @@ TEST_F(BoundedSorterTest, CompoundLimit) {
     }
 
     // Example where the limit lands in the second partition.
-    sorter = makeAsc(SortOptions().Limit(6));
+    this->sorter = this->makeAsc(SortOptions().Limit(6));
     {
-        auto output = sort({
+        auto output = this->sort({
             {1001},
             {1005},
             {1004},
             {1007},
         });
-        assertSorted(output);
+        this->assertSorted(output);
 
-        sorter->restart();
-        output = sort(
+        this->sorter->restart();
+        output = this->sort(
             {
                 {1},
                 {5},
@@ -1467,8 +1457,8 @@ TEST_F(BoundedSorterTest, CompoundLimit) {
         ASSERT_EQ(output[0].time, 1);
         ASSERT_EQ(output[1].time, 4);
 
-        sorter->restart();
-        output = sort(
+        this->sorter->restart();
+        output = this->sort(
             {
                 {11},
                 {15},
@@ -1479,31 +1469,24 @@ TEST_F(BoundedSorterTest, CompoundLimit) {
     }
 }
 
-TEST_F(BoundedSorterTest, CompoundSpill) {
+TYPED_TEST(BoundedSorterTest, CompoundSpill) {
     unittest::TempDir spillDir = makeSpillDir();
-    auto options = SortOptions().Tracker(&sorterTracker).MaxMemoryUsageBytes(40);
-    std::shared_ptr<FileBasedSpiller<Key, Doc, ComparatorAsc>> spiller =
-        std::make_shared<FileBasedSpiller<Key, Doc, ComparatorAsc>>(
-            spillDir.path(),
-            /*fileStats=*/nullptr,
-            /*dbName=*/boost::none,
-            sorter::kLatestChecksumVersion,
-            testSpillingMinAvailableDiskSpaceBytes);
-    sorter = makeAsc(options, std::move(spiller));
+    auto options = SortOptions().Tracker(&this->sorterTracker).MaxMemoryUsageBytes(40);
+    this->sorter = this->makeAsc(options, this->storage().makeSpiller(options, spillDir.path()));
 
     // When each partition is small enough, we don't spill.
-    ASSERT_EQ(sorter->stats().spilledRanges(), 0);
-    auto output = sort({
+    ASSERT_EQ(this->sorter->stats().spilledRanges(), 0);
+    auto output = this->sort({
         {1001},
         {1007},
     });
-    assertSorted(output);
-    ASSERT_EQ(sorter->stats().spilledRanges(), 0);
+    this->assertSorted(output);
+    ASSERT_EQ(this->sorter->stats().spilledRanges(), 0);
 
     // If any individual partition is large enough, we do spill.
-    sorter->restart();
-    ASSERT_EQ(sorter->stats().spilledRanges(), 0);
-    output = sort({
+    this->sorter->restart();
+    ASSERT_EQ(this->sorter->stats().spilledRanges(), 0);
+    output = this->sort({
         {1},
         {5},
         {5},
@@ -1516,21 +1499,21 @@ TEST_F(BoundedSorterTest, CompoundSpill) {
         {4},
         {7},
     });
-    assertSorted(output);
-    ASSERT_EQ(sorter->stats().spilledRanges(), 1);
+    this->assertSorted(output);
+    ASSERT_EQ(this->sorter->stats().spilledRanges(), 1);
 
     // If later partitions are small again, they don't spill.
-    sorter->restart();
-    ASSERT_EQ(sorter->stats().spilledRanges(), 1);
-    output = sort({
+    this->sorter->restart();
+    ASSERT_EQ(this->sorter->stats().spilledRanges(), 1);
+    output = this->sort({
         {11},
         {17},
     });
-    assertSorted(output);
-    ASSERT_EQ(sorter->stats().spilledRanges(), 1);
+    this->assertSorted(output);
+    ASSERT_EQ(this->sorter->stats().spilledRanges(), 1);
 }
 
-TEST_F(BoundedSorterTest, LargeSpill) {
+TYPED_TEST(BoundedSorterTest, LargeSpill) {
     static const Key kKey = 1;
     static constexpr uint64_t kMemoryLimit = 4 * sorter::kSortedFileBufferSize;
     static const int kPerEntryMemUsage = kKey.memUsageForSorter() + Doc{kKey}.memUsageForSorter();
@@ -1538,14 +1521,8 @@ TEST_F(BoundedSorterTest, LargeSpill) {
 
     unittest::TempDir spillDir = makeSpillDir();
     auto options = SortOptions().MaxMemoryUsageBytes(kMemoryLimit);
-    std::shared_ptr<FileBasedSpiller<Key, Doc, ComparatorAsc>> spiller =
-        std::make_shared<FileBasedSpiller<Key, Doc, ComparatorAsc>>(
-            spillDir.path(),
-            /*fileStats=*/nullptr,
-            /*dbName=*/boost::none,
-            sorter::kLatestChecksumVersion,
-            testSpillingMinAvailableDiskSpaceBytes);
-    sorter = makeAscNoBound(options, std::move(spiller));
+    this->sorter =
+        this->makeAscNoBound(options, this->storage().makeSpiller(options, spillDir.path()));
 
     std::vector<Doc> input;
     input.reserve(kDocCountToCauseSpilling);
@@ -1553,8 +1530,8 @@ TEST_F(BoundedSorterTest, LargeSpill) {
         input.emplace_back(Doc{kKey});
     }
 
-    assertSorted(sort(input));
-    ASSERT_GTE(sorter->stats().spilledRanges(), 1);
+    this->assertSorted(this->sort(input));
+    ASSERT_GTE(this->sorter->stats().spilledRanges(), 1);
 }
 template <typename Traits>
 class SpillerMergeDiskSpaceTest : public MakeFromExistingRangesTypedTestBase<Traits> {
@@ -1606,13 +1583,12 @@ TYPED_TEST(SpillerMergeDiskSpaceTest, MergeSpillsRespectsDiskSpaceCheck) {
 }  // namespace sorter
 }  // namespace mongo
 
-template class ::mongo::Sorter<::mongo::sorter::BoundedSorterTest::Key,
-                               ::mongo::sorter::BoundedSorterTest::Doc>;
-template class ::mongo::BoundedSorter<::mongo::sorter::BoundedSorterTest::Key,
-                                      ::mongo::sorter::BoundedSorterTest::Doc,
+template class ::mongo::Sorter<::mongo::sorter::Key, ::mongo::sorter::Doc>;
+template class ::mongo::BoundedSorter<::mongo::sorter::Key,
+                                      ::mongo::sorter::Doc,
                                       ::mongo::sorter::IWComparator,
-                                      ::mongo::sorter::BoundedSorterTest::BoundMakerAsc>;
-template class ::mongo::BoundedSorter<::mongo::sorter::BoundedSorterTest::Key,
-                                      ::mongo::sorter::BoundedSorterTest::Doc,
+                                      ::mongo::sorter::BoundMakerAsc>;
+template class ::mongo::BoundedSorter<::mongo::sorter::Key,
+                                      ::mongo::sorter::Doc,
                                       ::mongo::sorter::IWComparator,
-                                      ::mongo::sorter::BoundedSorterTest::BoundMakerDesc>;
+                                      ::mongo::sorter::BoundMakerDesc>;

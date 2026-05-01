@@ -524,6 +524,24 @@ public:
         return path;
     };
 
+    // TODO SERVER-125808: Tighten the memory consumption bounds of container-based spillWithHeap().
+    std::shared_ptr<sorter::Iterator<Key, Value>> spillWithHeap(
+        const SortOptions& opts,
+        const SpillerBase<Key, Value, Comparator>::Settings& settings,
+        std::priority_queue<std::pair<Key, Value>,
+                            std::vector<std::pair<Key, Value>>,
+                            Greater<Key, Value, Comparator>>& heap) override {
+        std::vector<std::pair<Key, Value>> data;
+        data.reserve(heap.size());
+        while (!heap.empty()) {
+            data.push_back(heap.top());
+            heap.pop();
+        }
+        // Using _spill() allows us to re-use the _current bookkeeping required by the
+        // container-based spiller.
+        return _spill(opts, settings, data)->done();
+    }
+
 private:
     ContainerBasedStorage<Key, Value>& _containerBasedStorage() {
         return *static_cast<ContainerBasedStorage<Key, Value>*>(this->_storage.get());
