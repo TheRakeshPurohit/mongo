@@ -1579,7 +1579,7 @@ void MultiIndexBlock::_writeStateToContainer(OperationContext* opCtx) const {
     IntegerKeyedContainer& container =
         std::get<std::reference_wrapper<IntegerKeyedContainer>>(rs.getContainer()).get();
 
-    static constexpr int64_t kResumeStateKey = 0;
+    static constexpr int64_t kResumeStateKey = 1;
 
     writeConflictRetry(opCtx, "writeIndexBuildStateToContainer", NamespaceString::kEmpty, [&] {
         WriteUnitOfWork wuow(opCtx);

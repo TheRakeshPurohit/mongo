@@ -1162,9 +1162,9 @@ ResumeStateContainerInsertObserver& installResumeStateContainerObserver(Operatio
     return *ptr;
 }
 
-// Reads the single resume-state record persisted at fixed key 0 in the per-build internal record
-// store created by init() for primary-driven index builds. Returns boost::none if the table has
-// no records. ASSERTS that the table contains at most one record.
+// Reads the single resume-state record persisted at the fixed resume-state key in the per-build
+// internal record store created by init() for primary-driven index builds. Returns boost::none if
+// the table has no records. ASSERTS that the table contains at most one record.
 boost::optional<BSONObj> readReplicatedResumeState(OperationContext* opCtx, const UUID& buildUUID) {
     auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
     const auto indexBuildIdent = ident::generateNewIndexBuildIdent(buildUUID);
@@ -1179,8 +1179,8 @@ boost::optional<BSONObj> readReplicatedResumeState(OperationContext* opCtx, cons
     if (!record) {
         return boost::none;
     }
-    // The container-write path always writes at key 0.
-    ASSERT_EQUALS(0, record->first);
+    // The container-write path always writes at the fixed resume-state key (1).
+    ASSERT_EQUALS(1, record->first);
     BSONObj obj(record->second.data());
     auto owned = obj.getOwned();
     // Confirm there is no second record at any key.
@@ -1247,8 +1247,9 @@ KReplicateBuildHandle setUpKReplicatePrimaryDrivenBuild(OperationContext* opCtx,
 }
 
 // persistResumeState for a primary-driven build with kReplicate goes through the container_write
-// API: a single record is written at key 0, the OpObserver sees one onContainerInsert against the
-// per-build ident, and the persisted document parses as ResumeIndexInfo with the expected fields.
+// API: a single record is written at the fixed resume-state key, the OpObserver sees one
+// onContainerInsert against the per-build ident, and the persisted document parses as
+// ResumeIndexInfo with the expected fields.
 TEST_F(MultiIndexBlockTest, PersistResumeStateUsesContainerWrites) {
     RAIIServerParameterControllerForTest ffContainerWrites{"featureFlagContainerWrites", true};
     RAIIServerParameterControllerForTest ffPDIB{"featureFlagPrimaryDrivenIndexBuilds", true};
@@ -1271,14 +1272,14 @@ TEST_F(MultiIndexBlockTest, PersistResumeStateUsesContainerWrites) {
 
     indexer->persistResumeState(operationContext(), coll.get());
 
-    // Exactly one container insert against the resume-state ident, at fixed key 0.
+    // Exactly one container insert against the resume-state ident, at the fixed resume-state key.
     ASSERT_EQUALS(1U, observer.countInsertsForIdent(handle.indexBuildIdent));
     auto resumeIt =
         std::find_if(observer.intInserts.begin(), observer.intInserts.end(), [&](const auto& ins) {
             return ins.ident == handle.indexBuildIdent;
         });
     ASSERT_NOT_EQUALS(resumeIt, observer.intInserts.end());
-    ASSERT_EQUALS(0, resumeIt->key);
+    ASSERT_EQUALS(1, resumeIt->key);
 
     auto persisted = readReplicatedResumeState(operationContext(), handle.buildUUID);
     ASSERT_TRUE(persisted);
@@ -1320,21 +1321,22 @@ TEST_F(MultiIndexBlockTest, PersistResumeStateOverwritesPriorState) {
     indexer->persistResumeState(operationContext(), coll.get());
     indexer->persistResumeState(operationContext(), coll.get());
 
-    // The first write inserts at key 0; the second sees an existing key and updates in place.
+    // The first write inserts at the resume-state key; the second sees an existing key and
+    // updates in place.
     ASSERT_EQUALS(1U, observer.countInsertsForIdent(handle.indexBuildIdent));
     ASSERT_EQUALS(1U, observer.countUpdatesForIdent(handle.indexBuildIdent));
     for (const auto& op : observer.intInserts) {
         if (op.ident == handle.indexBuildIdent) {
-            ASSERT_EQUALS(0, op.key);
+            ASSERT_EQUALS(1, op.key);
         }
     }
     for (const auto& op : observer.intUpdates) {
         if (op.ident == handle.indexBuildIdent) {
-            ASSERT_EQUALS(0, op.key);
+            ASSERT_EQUALS(1, op.key);
         }
     }
 
-    // ...and the table still has a single record at key 0 (overwrite, not append).
+    // ...and the table still has a single record at the resume-state key (overwrite, not append).
     auto persisted = readReplicatedResumeState(operationContext(), handle.buildUUID);
     ASSERT_TRUE(persisted);
     auto resumeInfo = ResumeIndexInfo::parse(*persisted, IDLParserContext("ResumeIndexInfo"));
