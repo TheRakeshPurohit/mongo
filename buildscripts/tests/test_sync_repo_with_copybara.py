@@ -90,6 +90,17 @@ def write_copybara_path_rules_module(path: Path, path_rules_path: Path) -> None:
     )
 
 
+def make_source_commit(
+    sha: str, subject: str | None = None
+) -> sync_repo_with_copybara.SourceCommit:
+    return sync_repo_with_copybara.SourceCommit(
+        sha=sha,
+        author="Test User <test@example.com>",
+        author_date="2026-05-01T00:00:00+00:00",
+        subject=subject or f"Subject for {sha}",
+    )
+
+
 def write_copybara_path_rules_template(path: Path, template_text: str | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if template_text is None:
@@ -120,6 +131,136 @@ def expected_copybara_config_rev_parse_fragment() -> str:
         sync_repo_with_copybara.COPYBARA_CONFIG_FETCH_REF
     )
     return f"rev-parse {quoted_ref}"
+
+
+class TestRunCommand(unittest.TestCase):
+    def test_run_command_can_suppress_success_output(self):
+        process = MagicMock()
+        process.stdout = MagicMock()
+        process.communicate.return_value = ("first noisy line\nsecond noisy line\n", None)
+        process.returncode = 0
+
+        stdout = io.StringIO()
+        with (
+            patch(
+                "buildscripts.copybara.sync_repo_with_copybara.subprocess.Popen",
+                return_value=process,
+            ),
+            redirect_stdout(stdout),
+        ):
+            output = sync_repo_with_copybara.run_command("git noisy", log_output=False)
+
+        self.assertEqual(output, "first noisy line\nsecond noisy line\n")
+        self.assertIn("git noisy", stdout.getvalue())
+        self.assertNotIn("first noisy line", stdout.getvalue())
+
+    def test_run_command_can_suppress_success_command_and_output(self):
+        process = MagicMock()
+        process.stdout = MagicMock()
+        process.communicate.return_value = ("first noisy line\nsecond noisy line\n", None)
+        process.returncode = 0
+
+        stdout = io.StringIO()
+        with (
+            patch(
+                "buildscripts.copybara.sync_repo_with_copybara.subprocess.Popen",
+                return_value=process,
+            ),
+            redirect_stdout(stdout),
+        ):
+            output = sync_repo_with_copybara.run_command(
+                "git noisy", log_output=False, log_command=False
+            )
+
+        self.assertEqual(output, "first noisy line\nsecond noisy line\n")
+        self.assertEqual(stdout.getvalue(), "")
+
+    def test_run_command_prints_suppressed_output_on_failure(self):
+        process = MagicMock()
+        process.stdout = MagicMock()
+        process.communicate.return_value = ("fatal: something broke\n", None)
+        process.returncode = 128
+
+        stdout = io.StringIO()
+        with (
+            patch(
+                "buildscripts.copybara.sync_repo_with_copybara.subprocess.Popen",
+                return_value=process,
+            ),
+            redirect_stdout(stdout),
+            self.assertRaises(subprocess.CalledProcessError) as raised,
+        ):
+            sync_repo_with_copybara.run_command("git noisy", log_output=False)
+
+        self.assertIn("fatal: something broke", stdout.getvalue())
+        self.assertEqual(raised.exception.output, "fatal: something broke\n")
+
+    def test_run_command_prints_suppressed_command_on_failure(self):
+        process = MagicMock()
+        process.stdout = MagicMock()
+        process.communicate.return_value = ("fatal: something broke\n", None)
+        process.returncode = 128
+
+        stdout = io.StringIO()
+        with (
+            patch(
+                "buildscripts.copybara.sync_repo_with_copybara.subprocess.Popen",
+                return_value=process,
+            ),
+            redirect_stdout(stdout),
+            self.assertRaises(subprocess.CalledProcessError),
+        ):
+            sync_repo_with_copybara.run_command("git noisy", log_output=False, log_command=False)
+
+        self.assertIn("git noisy", stdout.getvalue())
+        self.assertIn("fatal: something broke", stdout.getvalue())
+
+    def test_run_command_without_stderr_merge_returns_stdout_only(self):
+        process = MagicMock()
+        process.stdout = MagicMock()
+        process.communicate.return_value = ("tracked.txt\0", "warning on stderr\n")
+        process.returncode = 0
+
+        with (
+            patch(
+                "buildscripts.copybara.sync_repo_with_copybara.subprocess.Popen",
+                return_value=process,
+            ) as mock_popen,
+            redirect_stdout(io.StringIO()),
+        ):
+            output = sync_repo_with_copybara.run_command("git diff -z", merge_stderr=False)
+
+        self.assertEqual(output, "tracked.txt\0")
+        mock_popen.assert_called_once()
+        self.assertEqual(mock_popen.call_args.kwargs["stderr"], subprocess.PIPE)
+
+
+class TestSourceCommitParsing(unittest.TestCase):
+    def test_parse_source_commit_log_handles_git_record_newlines(self):
+        output = (
+            "commit1\0Author One <one@example.com>\0"
+            "2026-05-01T00:00:00+00:00\0Subject one\0\n"
+            "commit2\0Author Two <two@example.com>\0"
+            "2026-05-01T00:01:00+00:00\0Subject two\0\n"
+        )
+
+        self.assertEqual(
+            sync_repo_with_copybara.parse_source_commit_log(output),
+            [
+                sync_repo_with_copybara.SourceCommit(
+                    sha="commit1",
+                    author="Author One <one@example.com>",
+                    author_date="2026-05-01T00:00:00+00:00",
+                    subject="Subject one",
+                ),
+                sync_repo_with_copybara.SourceCommit(
+                    sha="commit2",
+                    author="Author Two <two@example.com>",
+                    author_date="2026-05-01T00:01:00+00:00",
+                    subject="Subject two",
+                ),
+            ],
+        )
 
 
 @unittest.skipIf(
@@ -1214,6 +1355,58 @@ class TestCopybaraConfigHelpers(unittest.TestCase):
                 ("--init-history", "--last-rev=feedface123"),
             )
             self.assertIn(f"{prepared.config_file.parent}:/usr/src/app", prepared.docker_command)
+            self.assertEqual(
+                prepared.copybara_output_dir, prepared.config_file.parent / "copybara-output"
+            )
+            self.assertEqual(
+                prepared.source_mirror_dir,
+                prepared.config_file.parent
+                / "copybara-output"
+                / sync_repo_with_copybara.COPYBARA_SOURCE_MIRROR_DIR_NAME,
+            )
+            self.assertTrue(
+                (prepared.preview_dir / sync_repo_with_copybara.COPYBARA_WORKDIR_NAME).is_dir()
+            )
+            self.assertIn(
+                f"{prepared.preview_dir}:{sync_repo_with_copybara.COPYBARA_PREVIEW_CONTAINER_PATH}",
+                prepared.docker_command,
+            )
+            self.assertIn(
+                f"{prepared.copybara_output_dir}:{sync_repo_with_copybara.COPYBARA_OUTPUT_CONTAINER_PATH}",
+                prepared.docker_command,
+            )
+            self.assertIn("--entrypoint", prepared.docker_command)
+            self.assertIn("/bin/sh", prepared.docker_command)
+            self.assertIn("-c", prepared.docker_command)
+            self.assertIn(
+                sync_repo_with_copybara.shell_quote(
+                    sync_repo_with_copybara.COPYBARA_CONTAINER_ENTRYPOINT_SCRIPT
+                ),
+                prepared.docker_command,
+            )
+            self.assertIn("copybara-wrapper", prepared.docker_command)
+            self.assertIn(
+                sync_repo_with_copybara.COPYBARA_CONTAINER_GIT_CONFIG_PATH,
+                sync_repo_with_copybara.COPYBARA_CONTAINER_ENTRYPOINT_SCRIPT,
+            )
+            self.assertIn(
+                sync_repo_with_copybara.COPYBARA_SOURCE_MIRROR_CONTAINER_PATH,
+                sync_repo_with_copybara.COPYBARA_CONTAINER_ENTRYPOINT_SCRIPT,
+            )
+            self.assertIn(
+                "/usr/local/bin/copybara",
+                sync_repo_with_copybara.COPYBARA_CONTAINER_ENTRYPOINT_SCRIPT,
+            )
+            self.assertIn(
+                f"--work-dir={sync_repo_with_copybara.COPYBARA_WORKDIR_CONTAINER_PATH}",
+                prepared.docker_command,
+            )
+            self.assertIn(
+                f"--output-root={sync_repo_with_copybara.COPYBARA_OUTPUT_CONTAINER_PATH}",
+                prepared.docker_command,
+            )
+            copybara_args = prepared.docker_command[prepared.docker_command.index("migrate") :]
+            self.assertNotIn("-v", copybara_args)
             self.assertNotIn(
                 f"{prepared.config_file}:/usr/src/app/copy.bara.sky", prepared.docker_command
             )
@@ -1510,6 +1703,11 @@ class TestCopybaraConfigAndTestWorkflowHelpers(unittest.TestCase):
             untracked_paths = sync_repo_with_copybara.list_untracked_paths(repo_dir)
 
         self.assertEqual(untracked_paths, [Path("new.txt")])
+        mock_run_command.assert_called_once_with(
+            f"git -C {sync_repo_with_copybara.shell_quote(repo_dir)} "
+            "ls-files --others --exclude-standard -z",
+            merge_stderr=False,
+        )
 
     @patch("buildscripts.copybara.sync_repo_with_copybara.run_command")
     def test_list_untracked_paths_keeps_symlinked_directories(self, mock_run_command):
@@ -1525,6 +1723,23 @@ class TestCopybaraConfigAndTestWorkflowHelpers(unittest.TestCase):
             untracked_paths = sync_repo_with_copybara.list_untracked_paths(repo_dir)
 
         self.assertEqual(untracked_paths, [Path("linked_dir")])
+
+    @patch("buildscripts.copybara.sync_repo_with_copybara.run_command")
+    def test_list_changed_paths_between_refs_reads_machine_output_from_stdout_only(
+        self, mock_run_command
+    ):
+        mock_run_command.side_effect = ["tracked.txt\0nested/file.cpp\0", "deleted.txt\0"]
+
+        changed_paths, deleted_paths = sync_repo_with_copybara.list_changed_paths_between_refs(
+            "/repo",
+            "patchbase456",
+        )
+
+        self.assertEqual(changed_paths, [Path("tracked.txt"), Path("nested/file.cpp")])
+        self.assertEqual(deleted_paths, [Path("deleted.txt")])
+        self.assertEqual(mock_run_command.call_count, 2)
+        for command_call in mock_run_command.call_args_list:
+            self.assertEqual(command_call.kwargs, {"merge_stderr": False})
 
     def test_filter_untracked_paths_for_test_source_skips_task_generated_paths(self):
         filtered_paths = sync_repo_with_copybara.filter_untracked_paths_for_test_source(
@@ -1813,6 +2028,41 @@ class TestCopybaraConfigAndTestWorkflowHelpers(unittest.TestCase):
             f"{sync_repo_with_copybara.shell_quote(Path('/tmp/source'))}"
         )
 
+    @patch("buildscripts.copybara.sync_repo_with_copybara.run_command")
+    def test_clone_source_repo_for_commit_discovery_uses_local_source_mirror_branch(
+        self, mock_run_command
+    ):
+        source_url = "/tmp/source-mirror.git"
+        sync = sync_repo_with_copybara.PreparedBranchSync(
+            branch="v8.0",
+            source_ref="headsha",
+            config_sha="local",
+            workflow_name="prod_v8.0",
+            config_file=Path("/tmp/copy.bara.sky"),
+            preview_dir=Path("/tmp/preview"),
+            docker_command=("echo",),
+            copybara_source_url="file:///tmp/copybara-output/source-mirror.git",
+            copybara_config=sync_repo_with_copybara.CopybaraConfig(
+                source=sync_repo_with_copybara.CopybaraRepoConfig(
+                    git_url=source_url,
+                    repo_name=sync_repo_with_copybara.SOURCE_REPO_NAME,
+                    branch="v8.0",
+                    ref="headsha",
+                )
+            ),
+        )
+
+        sync_repo_with_copybara.clone_source_repo_for_commit_discovery(
+            sync,
+            Path("/tmp/source"),
+        )
+
+        mock_run_command.assert_called_once_with(
+            expected_single_branch_clone_command(
+                "copybara_sync_source_v8_0", source_url, Path("/tmp/source")
+            )
+        )
+
     @patch("buildscripts.copybara.sync_repo_with_copybara.remove_paths_from_repo")
     @patch("buildscripts.copybara.sync_repo_with_copybara.copy_paths_into_repo")
     @patch("buildscripts.copybara.sync_repo_with_copybara.list_untracked_paths")
@@ -1933,7 +2183,7 @@ class TestCopybaraConfigAndTestWorkflowHelpers(unittest.TestCase):
                 )
                 self.assertEqual(
                     sync_repo_with_copybara.run_command(
-                        f"git -C {patched_repo_dir} rev-parse HEAD^"
+                        f"git -C {patched_repo_dir} rev-parse HEAD~1"
                     ).strip(),
                     copybara_base_revision,
                 )
@@ -2592,7 +2842,7 @@ class TestMainWorkflow(unittest.TestCase):
     @patch("buildscripts.copybara.sync_repo_with_copybara.prepare_branch_sync")
     @patch("buildscripts.copybara.sync_repo_with_copybara.activate_new_hotfix_tasks")
     @patch("buildscripts.copybara.sync_repo_with_copybara.get_remote_tag_commit")
-    @patch("buildscripts.copybara.sync_repo_with_copybara.tag_exists_remote")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.get_remote_tag_origin")
     @patch("buildscripts.copybara.sync_repo_with_copybara.fetch_remote_copybara_config_bundle")
     @patch("buildscripts.copybara.sync_repo_with_copybara.get_local_copybara_config_bundle")
     @patch("buildscripts.copybara.sync_repo_with_copybara.get_copybara_tokens")
@@ -2609,7 +2859,7 @@ class TestMainWorkflow(unittest.TestCase):
         mock_get_copybara_tokens,
         mock_get_local_copybara_config_bundle,
         mock_fetch_remote_copybara_config_bundle,
-        mock_tag_exists_remote,
+        mock_get_remote_tag_origin,
         mock_get_remote_tag_commit,
         mock_activate_new_hotfix_tasks,
         mock_prepare_branch_sync,
@@ -2628,7 +2878,7 @@ class TestMainWorkflow(unittest.TestCase):
             sync_repo_with_copybara.TEST_REPO_URL: "test-token",
         }
         mock_get_copybara_tokens.side_effect = [tokens, tokens]
-        mock_tag_exists_remote.return_value = False
+        mock_get_remote_tag_origin.return_value = None
         mock_get_remote_tag_commit.return_value = "tagsha123"
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2697,7 +2947,7 @@ class TestMainWorkflow(unittest.TestCase):
         mock_get_local_copybara_config_bundle.assert_called_once_with("/repo")
         mock_fetch_remote_copybara_config_bundle.assert_not_called()
         mock_ensure_generated_copybara_evergreen_is_current.assert_called_once_with(Path(tmpdir))
-        mock_tag_exists_remote.assert_called_once_with(authenticated_test_url, "r8.2.7")
+        mock_get_remote_tag_origin.assert_called_once_with(authenticated_test_url, "r8.2.7")
         mock_activate_new_hotfix_tasks.assert_not_called()
         mock_run_branch_commit_sync.assert_called_once()
         mock_publish_release_tag.assert_called_once()
@@ -2816,7 +3066,7 @@ class TestMainWorkflow(unittest.TestCase):
     @patch("buildscripts.copybara.sync_repo_with_copybara.prepare_branch_sync")
     @patch("buildscripts.copybara.sync_repo_with_copybara.activate_new_hotfix_tasks")
     @patch("buildscripts.copybara.sync_repo_with_copybara.get_remote_tag_commit")
-    @patch("buildscripts.copybara.sync_repo_with_copybara.tag_exists_remote")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.get_remote_tag_origin")
     @patch("buildscripts.copybara.sync_repo_with_copybara.fetch_remote_copybara_config_bundle")
     @patch("buildscripts.copybara.sync_repo_with_copybara.get_copybara_tokens")
     @patch("buildscripts.copybara.sync_repo_with_copybara.create_mongodb_bot_gitconfig")
@@ -2831,7 +3081,7 @@ class TestMainWorkflow(unittest.TestCase):
         mock_create_mongodb_bot_gitconfig,
         mock_get_copybara_tokens,
         mock_fetch_remote_copybara_config_bundle,
-        mock_tag_exists_remote,
+        mock_get_remote_tag_origin,
         mock_get_remote_tag_commit,
         mock_activate_new_hotfix_tasks,
         mock_prepare_branch_sync,
@@ -2849,7 +3099,7 @@ class TestMainWorkflow(unittest.TestCase):
             sync_repo_with_copybara.TEST_REPO_URL: "test-token",
         }
         mock_get_copybara_tokens.side_effect = [tokens, tokens]
-        mock_tag_exists_remote.return_value = False
+        mock_get_remote_tag_origin.return_value = None
         mock_get_remote_tag_commit.return_value = "tagsha123"
         synthetic_fragment_contents = ""
 
@@ -2913,7 +3163,7 @@ class TestMainWorkflow(unittest.TestCase):
         mock_run_branch_commit_sync.assert_called_once_with(prepared_sync, tokens)
         mock_publish_release_tag.assert_called_once_with(prepared_sync, tokens)
         mock_activate_new_hotfix_tasks.assert_called_once()
-        mock_tag_exists_remote.assert_called_once_with(
+        mock_get_remote_tag_origin.assert_called_once_with(
             "https://x-access-token:test-token@github.com/10gen/mongo-copybara.git",
             "r8.2.7",
         )
@@ -2922,14 +3172,15 @@ class TestMainWorkflow(unittest.TestCase):
         "buildscripts.copybara.sync_repo_with_copybara.ensure_generated_copybara_evergreen_is_current"
     )
     @patch("buildscripts.copybara.sync_repo_with_copybara.prepare_branch_sync")
-    @patch("buildscripts.copybara.sync_repo_with_copybara.tag_exists_remote")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.get_remote_tag_origin")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.get_remote_tag_commit")
     @patch("buildscripts.copybara.sync_repo_with_copybara.fetch_remote_copybara_config_bundle")
     @patch("buildscripts.copybara.sync_repo_with_copybara.get_copybara_tokens")
     @patch("buildscripts.copybara.sync_repo_with_copybara.create_mongodb_bot_gitconfig")
     @patch("buildscripts.copybara.sync_repo_with_copybara.ensure_copybara_checkout_and_image")
     @patch("buildscripts.copybara.sync_repo_with_copybara.read_config_file")
     @patch("buildscripts.copybara.sync_repo_with_copybara.os.getcwd")
-    def test_main_rejects_existing_public_release_tag(
+    def test_main_rejects_existing_public_release_tag_with_different_origin(
         self,
         mock_getcwd,
         mock_read_config_file,
@@ -2937,7 +3188,8 @@ class TestMainWorkflow(unittest.TestCase):
         mock_create_mongodb_bot_gitconfig,
         mock_get_copybara_tokens,
         mock_fetch_remote_copybara_config_bundle,
-        mock_tag_exists_remote,
+        mock_get_remote_tag_commit,
+        mock_get_remote_tag_origin,
         mock_prepare_branch_sync,
         mock_ensure_generated_copybara_evergreen_is_current,
     ):
@@ -2951,7 +3203,11 @@ class TestMainWorkflow(unittest.TestCase):
             sync_repo_with_copybara.TEST_REPO_URL: "test-token",
         }
         mock_get_copybara_tokens.return_value = tokens
-        mock_tag_exists_remote.return_value = True
+        mock_get_remote_tag_commit.return_value = "tagsha123"
+        mock_get_remote_tag_origin.return_value = sync_repo_with_copybara.RemoteTagOrigin(
+            destination_commit="publicsha123",
+            git_origin_rev_id="othersha456",
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             base_config_path = Path(tmpdir) / "copy.bara.sky"
@@ -2983,7 +3239,93 @@ class TestMainWorkflow(unittest.TestCase):
 
         mock_prepare_branch_sync.assert_not_called()
         mock_ensure_generated_copybara_evergreen_is_current.assert_called_once_with(Path(tmpdir))
-        mock_tag_exists_remote.assert_called_once_with(
+        mock_get_remote_tag_origin.assert_called_once_with(
+            "https://x-access-token:test-token@github.com/10gen/mongo-copybara.git",
+            "r8.2.7",
+        )
+
+    @patch(
+        "buildscripts.copybara.sync_repo_with_copybara.ensure_generated_copybara_evergreen_is_current"
+    )
+    @patch("buildscripts.copybara.sync_repo_with_copybara.publish_release_tag")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.run_branch_commit_sync")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.prepare_branch_sync")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.activate_new_hotfix_tasks")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.get_remote_tag_origin")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.get_remote_tag_commit")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.fetch_remote_copybara_config_bundle")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.get_copybara_tokens")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.create_mongodb_bot_gitconfig")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.ensure_copybara_checkout_and_image")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.read_config_file")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.os.getcwd")
+    def test_main_skips_existing_public_release_tag_with_matching_origin(
+        self,
+        mock_getcwd,
+        mock_read_config_file,
+        mock_ensure_copybara_checkout_and_image,
+        mock_create_mongodb_bot_gitconfig,
+        mock_get_copybara_tokens,
+        mock_fetch_remote_copybara_config_bundle,
+        mock_get_remote_tag_commit,
+        mock_get_remote_tag_origin,
+        mock_activate_new_hotfix_tasks,
+        mock_prepare_branch_sync,
+        mock_run_branch_commit_sync,
+        mock_publish_release_tag,
+        mock_ensure_generated_copybara_evergreen_is_current,
+    ):
+        mock_read_config_file.return_value = {
+            "project": sync_repo_with_copybara.EXPECTED_EVERGREEN_PROJECT,
+        }
+        mock_getcwd.return_value = "/repo"
+        tokens = {
+            sync_repo_with_copybara.SOURCE_REPO_URL: "source-token",
+            sync_repo_with_copybara.PUBLIC_GITHUB_APP_REPO_URL: "prod-token",
+            sync_repo_with_copybara.TEST_REPO_URL: "test-token",
+        }
+        mock_get_copybara_tokens.return_value = tokens
+        mock_get_remote_tag_commit.return_value = "tagsha123"
+        mock_get_remote_tag_origin.return_value = sync_repo_with_copybara.RemoteTagOrigin(
+            destination_commit="publicsha123",
+            git_origin_rev_id="tagsha123",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_config_path = Path(tmpdir) / "copy.bara.sky"
+            write_base_copybara_config(
+                base_config_path,
+                prod_url=sync_repo_with_copybara.TEST_REPO_URL,
+            )
+            fragment_path = Path(tmpdir) / "master.sky"
+            fragment_path.write_text('sync_branch("master")\n')
+            mock_fetch_remote_copybara_config_bundle.return_value = (
+                sync_repo_with_copybara.CopybaraConfigBundle(
+                    config_sha="configsha123",
+                    bundle_dir=Path(tmpdir),
+                    base_config_path=base_config_path,
+                    path_rules_path=Path(tmpdir) / "copybara_path_rules.json",
+                    path_rules_module_path=Path(tmpdir) / "copybara_path_rules.bara.sky",
+                    branch_to_fragment={"master": fragment_path},
+                )
+            )
+
+            argv = [
+                "buildscripts/copybara/sync_repo_with_copybara.py",
+                "--workflow=prod",
+                "--branches=r8.2.7",
+            ]
+            stdout = io.StringIO()
+            with patch.object(sys, "argv", argv), redirect_stdout(stdout):
+                sync_repo_with_copybara.main()
+
+        self.assertIn("already synced", stdout.getvalue())
+        mock_prepare_branch_sync.assert_not_called()
+        mock_run_branch_commit_sync.assert_not_called()
+        mock_publish_release_tag.assert_not_called()
+        mock_activate_new_hotfix_tasks.assert_not_called()
+        mock_ensure_generated_copybara_evergreen_is_current.assert_called_once_with(Path(tmpdir))
+        mock_get_remote_tag_origin.assert_called_once_with(
             "https://x-access-token:test-token@github.com/10gen/mongo-copybara.git",
             "r8.2.7",
         )
@@ -3038,6 +3380,47 @@ class TestMainWorkflow(unittest.TestCase):
             self.assertIn('test_branch_prefix = "copybara_test_branch_patch456"', rewritten)
             self.assertIn('source_refs = {"v8.2": "deadbeef123"}', rewritten)
             self.assertIn("source_ref = source_refs.get(branch_name, branch_name)", rewritten)
+
+    def test_rewrite_copybara_config_can_switch_source_url_to_local_mirror(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "copy.bara.sky"
+            config_path.write_text(
+                'source_url = "https://github.com/10gen/mongo.git"\n'
+                'prod_url = "https://github.com/mongodb/mongo.git"\n'
+                'test_url = "https://github.com/10gen/mongo-copybara.git"\n'
+                'test_branch_prefix = "copybara_test_branch"\n'
+                "source_refs = {}\n"
+                "\n"
+                "def make_workflow(workflow_name, destination_url, source_ref, destination_ref):\n"
+                "    pass\n"
+                "\n"
+                "def sync_branch(branch_name, evergreen_activate = False):\n"
+                "    source_ref = source_refs.get(branch_name, branch_name)\n"
+                '    make_workflow("prod_" + branch_name, prod_url, source_ref, branch_name)\n'
+                "    make_workflow(\n"
+                '        "test_" + branch_name,\n'
+                "        test_url,\n"
+                "        source_ref,\n"
+                '        test_branch_prefix + "_" + branch_name,\n'
+                "    )\n"
+            )
+
+            sync_repo_with_copybara.rewrite_copybara_config(
+                config_file=config_path,
+                tokens_map={
+                    sync_repo_with_copybara.SOURCE_REPO_URL: "source-token",
+                    sync_repo_with_copybara.PUBLIC_GITHUB_APP_REPO_URL: "prod-token",
+                    sync_repo_with_copybara.TEST_REPO_URL: "test-token",
+                },
+                source_url_override="file:///tmp/copybara-output/source-mirror.git",
+            )
+
+            rewritten = config_path.read_text()
+            self.assertIn(
+                'source_url = "file:///tmp/copybara-output/source-mirror.git"',
+                rewritten,
+            )
+            self.assertNotIn("x-access-token:source-token@github.com/10gen/mongo.git", rewritten)
 
     def test_rewrite_copybara_config_can_switch_prod_url_to_test_repo(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3133,6 +3516,13 @@ class TestMainWorkflow(unittest.TestCase):
             self.assertEqual(result, sync_repo_with_copybara.BranchDryRunResult(branch="v8.2"))
             self.assertFalse(stale_file.exists())
             self.assertEqual(mock_run_command.call_count, 2)
+            self.assertTrue(
+                all(
+                    call_args.kwargs["log_output"] is False
+                    and call_args.kwargs["log_command"] is False
+                    for call_args in mock_run_command.call_args_list
+                )
+            )
             mock_get_copybara_tokens.assert_called_once_with(sync.expansions)
             mock_rewrite_copybara_config.assert_called_once_with(sync.config_file, refreshed_tokens)
             mock_validate_sync_config.assert_called()
@@ -3228,7 +3618,25 @@ class TestMainWorkflow(unittest.TestCase):
         mock_get_copybara_tokens.assert_called_once_with(sync.expansions)
         mock_rewrite_copybara_config.assert_called_once_with(sync.config_file, refreshed_tokens)
         mock_run_command.assert_called_once()
+        self.assertIs(mock_run_command.call_args.kwargs["log_output"], False)
+        self.assertIs(mock_run_command.call_args.kwargs["log_command"], False)
         mock_validate_preview_exclusions.assert_called_once()
+
+    def test_get_filesystem_free_space_uses_existing_parent(self):
+        class DiskUsage:
+            total = 4096
+            free = 2048
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            probe_path = Path(tmpdir) / "missing" / "child"
+            with patch(
+                "buildscripts.copybara.sync_repo_with_copybara.shutil.disk_usage",
+                return_value=DiskUsage(),
+            ) as mock_disk_usage:
+                free_space = sync_repo_with_copybara.get_filesystem_free_space(probe_path)
+
+            self.assertEqual(free_space, "2.0 KiB available of 4.0 KiB")
+            mock_disk_usage.assert_called_once_with(Path(tmpdir))
 
     def test_reset_preview_dir_uses_container_cleanup_when_host_cleanup_fails(self):
         tmpdir = Path(tempfile.mkdtemp())
@@ -3256,7 +3664,8 @@ class TestMainWorkflow(unittest.TestCase):
                 mock_rmtree.side_effect = OSError("permission denied")
 
                 def container_cleanup_side_effect(command):
-                    self.assertIn("--entrypoint /bin/sh", command)
+                    self.assertIn(sync_repo_with_copybara.shell_quote("--entrypoint"), command)
+                    self.assertIn(sync_repo_with_copybara.shell_quote("/bin/sh"), command)
                     self.assertIn(sync_repo_with_copybara.COPYBARA_DOCKER_IMAGE, command)
                     stale_file.unlink()
                     return ""
@@ -3266,10 +3675,87 @@ class TestMainWorkflow(unittest.TestCase):
                 sync_repo_with_copybara.reset_preview_dir(sync, reason="unit test")
 
                 self.assertFalse(stale_file.exists())
+                self.assertTrue(
+                    (preview_dir / sync_repo_with_copybara.COPYBARA_WORKDIR_NAME).is_dir()
+                )
                 mock_rmtree.assert_called_once_with(preview_dir)
                 mock_run_command.assert_called_once()
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+    @patch("buildscripts.copybara.sync_repo_with_copybara.run_git_remote_command")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.run_command")
+    def test_prepare_local_source_mirror_fetches_source_and_returns_local_sync(
+        self, mock_run_command, mock_run_git_remote_command
+    ):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            source_mirror_dir = (
+                tmpdir_path
+                / "copybara-output"
+                / sync_repo_with_copybara.COPYBARA_SOURCE_MIRROR_DIR_NAME
+            )
+            sync = sync_repo_with_copybara.PreparedBranchSync(
+                branch="v8.2",
+                source_ref="headsha",
+                config_sha="local",
+                workflow_name="prod_v8.2",
+                config_file=tmpdir_path / "copy.bara.sky",
+                preview_dir=tmpdir_path / "preview",
+                docker_command=("echo", "copybara"),
+                copybara_output_dir=tmpdir_path / "copybara-output",
+                source_mirror_dir=source_mirror_dir,
+                copybara_config=sync_repo_with_copybara.CopybaraConfig(
+                    source=sync_repo_with_copybara.CopybaraRepoConfig(
+                        git_url=sync_repo_with_copybara.auth_github_url(
+                            sync_repo_with_copybara.SOURCE_REPO_URL,
+                            "source-token",
+                        ),
+                        repo_name="10gen/mongo",
+                        branch="v8.2",
+                        ref="headsha",
+                    ),
+                    destination=sync_repo_with_copybara.CopybaraRepoConfig(
+                        git_url="https://example.com/destination.git",
+                        repo_name="mongodb/mongo",
+                        branch="v8.2",
+                    ),
+                ),
+            )
+
+            local_sync = sync_repo_with_copybara.prepare_local_source_mirror(sync)
+
+            self.assertEqual(
+                local_sync.copybara_config.source.git_url, source_mirror_dir.as_posix()
+            )
+            self.assertEqual(local_sync.source_ref, "copybara_sync_source_v8_2")
+            self.assertEqual(local_sync.copybara_config.source.ref, "copybara_sync_source_v8_2")
+            self.assertEqual(
+                local_sync.copybara_source_url,
+                sync_repo_with_copybara.get_copybara_source_mirror_url(),
+            )
+            self.assertEqual(local_sync.copybara_config.source.repo_name, "10gen/mongo")
+            self.assertTrue(source_mirror_dir.parent.is_dir())
+            self.assertIn(
+                f"git init --bare {sync_repo_with_copybara.shell_quote(source_mirror_dir)}",
+                mock_run_command.call_args_list[0].args[0],
+            )
+            fetch_command = mock_run_git_remote_command.call_args.args[0]
+            self.assertIn(sync_repo_with_copybara.shell_quote(source_mirror_dir), fetch_command)
+            self.assertIn("--tags", fetch_command)
+            self.assertIn("+headsha:refs/heads/copybara_sync_source_v8_2", fetch_command)
+            self.assertNotIn("+refs/heads/v8.2:refs/heads/v8.2", fetch_command)
+            self.assertIn(
+                sync_repo_with_copybara.auth_github_url(
+                    sync_repo_with_copybara.SOURCE_REPO_URL,
+                    "source-token",
+                ),
+                fetch_command,
+            )
+            symbolic_ref_command = mock_run_command.call_args_list[1].args[0]
+            self.assertIn("symbolic-ref", symbolic_ref_command)
+            self.assertIn("HEAD", symbolic_ref_command)
+            self.assertIn("refs/heads/copybara_sync_source_v8_2", symbolic_ref_command)
 
     @patch("buildscripts.copybara.sync_repo_with_copybara.rewrite_copybara_config")
     @patch("buildscripts.copybara.sync_repo_with_copybara.get_copybara_tokens")
@@ -3310,8 +3796,190 @@ class TestMainWorkflow(unittest.TestCase):
         sync_repo_with_copybara.run_branch_migrate(sync)
 
         self.assertEqual(mock_run_command.call_count, 2)
+        self.assertTrue(
+            all(
+                call_args.kwargs["log_output"] is False and call_args.kwargs["log_command"] is False
+                for call_args in mock_run_command.call_args_list
+            )
+        )
         mock_get_copybara_tokens.assert_called_once_with(sync.expansions)
         mock_rewrite_copybara_config.assert_called_once_with(sync.config_file, refreshed_tokens)
+
+    def make_release_tag_sync(self) -> sync_repo_with_copybara.PreparedBranchSync:
+        return sync_repo_with_copybara.PreparedBranchSync(
+            branch="v8.2.7",
+            source_ref="tagsha123",
+            config_sha="local",
+            workflow_name="prod_r8.2.7",
+            config_file=Path("/tmp/copy.bara.sky"),
+            preview_dir=Path("/tmp/preview"),
+            docker_command=("echo",),
+            copybara_config=sync_repo_with_copybara.CopybaraConfig(
+                destination=sync_repo_with_copybara.CopybaraRepoConfig(
+                    git_url="https://example.com/destination.git",
+                    repo_name="10gen/mongo-copybara",
+                    branch="v8.2.7",
+                )
+            ),
+            release_tag="r8.2.7",
+            release_source_commit="tagsha123",
+        )
+
+    @patch("buildscripts.copybara.sync_repo_with_copybara.run_command")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.resolve_release_tag_destination_commit")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.get_remote_tag_origin")
+    def test_publish_release_tag_skips_existing_tag_with_matching_origin(
+        self,
+        mock_get_remote_tag_origin,
+        mock_resolve_release_tag_destination_commit,
+        mock_run_command,
+    ):
+        sync = self.make_release_tag_sync()
+        mock_get_remote_tag_origin.return_value = sync_repo_with_copybara.RemoteTagOrigin(
+            destination_commit="publicsha123",
+            git_origin_rev_id="tagsha123",
+        )
+
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            sync_repo_with_copybara.publish_release_tag(sync, {})
+
+        self.assertIn("already synced", stdout.getvalue())
+        mock_resolve_release_tag_destination_commit.assert_not_called()
+        mock_run_command.assert_not_called()
+
+    @patch("buildscripts.copybara.sync_repo_with_copybara.run_command")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.resolve_release_tag_destination_commit")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.get_remote_tag_origin")
+    def test_publish_release_tag_rejects_existing_tag_with_different_origin(
+        self,
+        mock_get_remote_tag_origin,
+        mock_resolve_release_tag_destination_commit,
+        mock_run_command,
+    ):
+        sync = self.make_release_tag_sync()
+        mock_get_remote_tag_origin.return_value = sync_repo_with_copybara.RemoteTagOrigin(
+            destination_commit="publicsha123",
+            git_origin_rev_id="othersha456",
+        )
+
+        with self.assertRaises(sync_repo_with_copybara.BranchSyncError) as raised:
+            sync_repo_with_copybara.publish_release_tag(sync, {})
+
+        self.assertIn("expected tagsha123", str(raised.exception))
+        mock_resolve_release_tag_destination_commit.assert_not_called()
+        mock_run_command.assert_not_called()
+
+    @patch("buildscripts.copybara.sync_repo_with_copybara.run_command")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.resolve_release_tag_destination_commit")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.get_remote_tag_origin")
+    def test_publish_release_tag_pushes_when_tag_is_absent(
+        self,
+        mock_get_remote_tag_origin,
+        mock_resolve_release_tag_destination_commit,
+        mock_run_command,
+    ):
+        sync = self.make_release_tag_sync()
+        mock_get_remote_tag_origin.return_value = None
+        mock_resolve_release_tag_destination_commit.return_value = "publicsha123"
+
+        sync_repo_with_copybara.publish_release_tag(sync, {})
+
+        mock_run_command.assert_called_once()
+        self.assertIn("publicsha123:refs/tags/r8.2.7", mock_run_command.call_args.args[0])
+
+    @patch("buildscripts.copybara.sync_repo_with_copybara.run_branch_migrate")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.run_branch_dry_run")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.reset_preview_dir")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.prepare_local_source_mirror")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.get_copybara_tokens")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.rewrite_copybara_config")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.list_pending_source_commits")
+    def test_run_branch_commit_sync_uses_local_source_mirror(
+        self,
+        mock_list_pending_source_commits,
+        mock_rewrite_copybara_config,
+        mock_get_copybara_tokens,
+        mock_prepare_local_source_mirror,
+        mock_reset_preview_dir,
+        mock_run_branch_dry_run,
+        mock_run_branch_migrate,
+    ):
+        sync = sync_repo_with_copybara.PreparedBranchSync(
+            branch="v8.2",
+            source_ref="headsha",
+            config_sha="local",
+            workflow_name="prod_v8.2",
+            config_file=Path("/tmp/copy.bara.sky"),
+            preview_dir=Path("/tmp/preview"),
+            docker_command=("echo", "copybara"),
+            expansions={"version_id": "patch123"},
+            copybara_config=sync_repo_with_copybara.CopybaraConfig(
+                source=sync_repo_with_copybara.CopybaraRepoConfig(
+                    git_url=sync_repo_with_copybara.auth_github_url(
+                        sync_repo_with_copybara.SOURCE_REPO_URL,
+                        "initial-source-token",
+                    ),
+                    repo_name="10gen/mongo",
+                    branch="v8.2",
+                    ref="headsha",
+                ),
+                destination=sync_repo_with_copybara.CopybaraRepoConfig(
+                    git_url=sync_repo_with_copybara.auth_github_url(
+                        sync_repo_with_copybara.PUBLIC_GITHUB_APP_REPO_URL,
+                        "initial-prod-token",
+                    ),
+                    repo_name="mongodb/mongo",
+                    branch="v8.2",
+                ),
+            ),
+        )
+        local_sync = sync_repo_with_copybara.PreparedBranchSync(
+            branch=sync.branch,
+            source_ref=sync.source_ref,
+            config_sha=sync.config_sha,
+            workflow_name=sync.workflow_name,
+            config_file=sync.config_file,
+            preview_dir=sync.preview_dir,
+            docker_command=sync.docker_command,
+            expansions=sync.expansions,
+            copybara_source_url="file:///tmp/copybara-output/source-mirror.git",
+            copybara_config=sync_repo_with_copybara.CopybaraConfig(
+                source=sync_repo_with_copybara.CopybaraRepoConfig(
+                    git_url="/tmp/source-mirror.git",
+                    repo_name="10gen/mongo",
+                    branch="v8.2",
+                    ref="headsha",
+                ),
+                destination=sync.copybara_config.destination,
+            ),
+        )
+        initial_tokens = {
+            sync_repo_with_copybara.SOURCE_REPO_URL: "initial-source-token",
+            sync_repo_with_copybara.PUBLIC_GITHUB_APP_REPO_URL: "initial-prod-token",
+            sync_repo_with_copybara.TEST_REPO_URL: "initial-test-token",
+        }
+        mock_prepare_local_source_mirror.return_value = local_sync
+        mock_list_pending_source_commits.return_value = [make_source_commit("commit1")]
+        mock_run_branch_dry_run.return_value = sync_repo_with_copybara.BranchDryRunResult(
+            branch="v8.2"
+        )
+
+        sync_repo_with_copybara.run_branch_commit_sync(sync, initial_tokens)
+
+        mock_prepare_local_source_mirror.assert_called_once_with(sync)
+        mock_list_pending_source_commits.assert_called_once_with(local_sync)
+        self.assertEqual(
+            mock_rewrite_copybara_config.call_args.kwargs["source_url_override"],
+            "file:///tmp/copybara-output/source-mirror.git",
+        )
+        self.assertEqual(
+            mock_run_branch_dry_run.call_args.args[0].copybara_config.source.git_url,
+            "/tmp/source-mirror.git",
+        )
+        mock_get_copybara_tokens.assert_not_called()
+        self.assertEqual(mock_reset_preview_dir.call_count, 2)
+        mock_run_branch_migrate.assert_called_once()
 
     @patch("buildscripts.copybara.sync_repo_with_copybara.run_branch_migrate")
     @patch("buildscripts.copybara.sync_repo_with_copybara.run_branch_dry_run")
@@ -3319,7 +3987,7 @@ class TestMainWorkflow(unittest.TestCase):
     @patch("buildscripts.copybara.sync_repo_with_copybara.get_copybara_tokens")
     @patch("buildscripts.copybara.sync_repo_with_copybara.rewrite_copybara_config")
     @patch("buildscripts.copybara.sync_repo_with_copybara.list_pending_source_commits")
-    def test_run_branch_commit_sync_dry_runs_then_migrates_each_pending_commit(
+    def test_run_branch_commit_sync_reuses_tokens_across_pending_commits(
         self,
         mock_list_pending_source_commits,
         mock_rewrite_copybara_config,
@@ -3362,43 +4030,46 @@ class TestMainWorkflow(unittest.TestCase):
             sync_repo_with_copybara.PUBLIC_GITHUB_APP_REPO_URL: "initial-prod-token",
             sync_repo_with_copybara.TEST_REPO_URL: "initial-test-token",
         }
-        first_fresh_tokens = {
-            sync_repo_with_copybara.SOURCE_REPO_URL: "fresh-source-token-1",
-            sync_repo_with_copybara.PUBLIC_GITHUB_APP_REPO_URL: "fresh-prod-token-1",
-            sync_repo_with_copybara.TEST_REPO_URL: "fresh-test-token-1",
-        }
-        second_fresh_tokens = {
-            sync_repo_with_copybara.SOURCE_REPO_URL: "fresh-source-token-2",
-            sync_repo_with_copybara.PUBLIC_GITHUB_APP_REPO_URL: "fresh-prod-token-2",
-            sync_repo_with_copybara.TEST_REPO_URL: "fresh-test-token-2",
-        }
-        mock_list_pending_source_commits.return_value = ["commit1", "commit2"]
-        mock_get_copybara_tokens.side_effect = [first_fresh_tokens, second_fresh_tokens]
+        mock_list_pending_source_commits.return_value = [
+            make_source_commit("commit1"),
+            make_source_commit("commit2"),
+        ]
 
-        def dry_run_side_effect(commit_sync):
+        def dry_run_side_effect(commit_sync, on_auth_refresh=None):
+            self.assertIsNotNone(on_auth_refresh)
             self.assertEqual(commit_sync.source_ref, commit_sync.copybara_config.source.ref)
-            source_token = commit_sync.source_ref.replace("commit", "fresh-source-token-")
-            prod_token = commit_sync.source_ref.replace("commit", "fresh-prod-token-")
             self.assertEqual(
                 commit_sync.copybara_config.source.git_url,
                 sync_repo_with_copybara.auth_github_url(
                     sync_repo_with_copybara.SOURCE_REPO_URL,
-                    source_token,
+                    "initial-source-token",
                 ),
             )
             self.assertEqual(
                 commit_sync.copybara_config.destination.git_url,
                 sync_repo_with_copybara.auth_github_url(
                     sync_repo_with_copybara.PUBLIC_GITHUB_APP_REPO_URL,
-                    prod_token,
+                    "initial-prod-token",
                 ),
             )
             return sync_repo_with_copybara.BranchDryRunResult(branch=commit_sync.branch)
 
         mock_run_branch_dry_run.side_effect = dry_run_side_effect
 
-        result = sync_repo_with_copybara.run_branch_commit_sync(sync, initial_tokens)
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            result = sync_repo_with_copybara.run_branch_commit_sync(sync, initial_tokens)
 
+        self.assertIn(
+            "[v8.2] Commit 1/2 source: commit1 | 2026-05-01T00:00:00+00:00 | "
+            "Test User <test@example.com> | Subject for commit1",
+            stdout.getvalue(),
+        )
+        self.assertIn(
+            "[v8.2] Commit 2/2 source: commit2 | 2026-05-01T00:00:00+00:00 | "
+            "Test User <test@example.com> | Subject for commit2",
+            stdout.getvalue(),
+        )
         self.assertEqual(
             result,
             sync_repo_with_copybara.BranchCommitSyncResult(
@@ -3428,9 +4099,174 @@ class TestMainWorkflow(unittest.TestCase):
         )
         self.assertEqual(
             [call_args.args[1] for call_args in mock_rewrite_copybara_config.call_args_list],
-            [first_fresh_tokens, second_fresh_tokens],
+            [initial_tokens, initial_tokens],
+        )
+        mock_get_copybara_tokens.assert_not_called()
+        self.assertEqual(mock_reset_preview_dir.call_count, 4)
+
+    @patch("buildscripts.copybara.sync_repo_with_copybara.run_branch_migrate")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.run_branch_dry_run")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.reset_preview_dir")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.should_refresh_copybara_tokens")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.get_copybara_tokens")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.rewrite_copybara_config")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.list_pending_source_commits")
+    def test_run_branch_commit_sync_refreshes_tokens_when_stale(
+        self,
+        mock_list_pending_source_commits,
+        mock_rewrite_copybara_config,
+        mock_get_copybara_tokens,
+        mock_should_refresh_copybara_tokens,
+        mock_reset_preview_dir,
+        mock_run_branch_dry_run,
+        mock_run_branch_migrate,
+    ):
+        sync = sync_repo_with_copybara.PreparedBranchSync(
+            branch="v8.2",
+            source_ref="headsha",
+            config_sha="local",
+            workflow_name="prod_v8.2",
+            config_file=Path("/tmp/copy.bara.sky"),
+            preview_dir=Path("/tmp/preview"),
+            docker_command=("echo", "copybara"),
+            expansions={"version_id": "patch123"},
+            copybara_config=sync_repo_with_copybara.CopybaraConfig(
+                source=sync_repo_with_copybara.CopybaraRepoConfig(
+                    git_url=sync_repo_with_copybara.auth_github_url(
+                        sync_repo_with_copybara.SOURCE_REPO_URL,
+                        "initial-source-token",
+                    ),
+                    repo_name="10gen/mongo",
+                    branch="v8.2",
+                    ref="headsha",
+                ),
+                destination=sync_repo_with_copybara.CopybaraRepoConfig(
+                    git_url=sync_repo_with_copybara.auth_github_url(
+                        sync_repo_with_copybara.PUBLIC_GITHUB_APP_REPO_URL,
+                        "initial-prod-token",
+                    ),
+                    repo_name="mongodb/mongo",
+                    branch="v8.2",
+                ),
+            ),
+        )
+        initial_tokens = {
+            sync_repo_with_copybara.SOURCE_REPO_URL: "initial-source-token",
+            sync_repo_with_copybara.PUBLIC_GITHUB_APP_REPO_URL: "initial-prod-token",
+            sync_repo_with_copybara.TEST_REPO_URL: "initial-test-token",
+        }
+        fresh_tokens = {
+            sync_repo_with_copybara.SOURCE_REPO_URL: "fresh-source-token",
+            sync_repo_with_copybara.PUBLIC_GITHUB_APP_REPO_URL: "fresh-prod-token",
+            sync_repo_with_copybara.TEST_REPO_URL: "fresh-test-token",
+        }
+        mock_list_pending_source_commits.return_value = [
+            make_source_commit("commit1"),
+            make_source_commit("commit2"),
+        ]
+        mock_should_refresh_copybara_tokens.side_effect = [False, True]
+        mock_get_copybara_tokens.return_value = fresh_tokens
+        mock_run_branch_dry_run.return_value = sync_repo_with_copybara.BranchDryRunResult(
+            branch="v8.2"
+        )
+
+        sync_repo_with_copybara.run_branch_commit_sync(sync, initial_tokens)
+
+        mock_get_copybara_tokens.assert_called_once_with(sync.expansions)
+        self.assertEqual(
+            [call_args.args[1] for call_args in mock_rewrite_copybara_config.call_args_list],
+            [initial_tokens, fresh_tokens],
+        )
+        self.assertEqual(
+            mock_run_branch_dry_run.call_args_list[1].args[0].copybara_config.source.git_url,
+            sync_repo_with_copybara.auth_github_url(
+                sync_repo_with_copybara.SOURCE_REPO_URL,
+                "fresh-source-token",
+            ),
         )
         self.assertEqual(mock_reset_preview_dir.call_count, 4)
+        self.assertEqual(mock_run_branch_migrate.call_count, 2)
+
+    @patch("buildscripts.copybara.sync_repo_with_copybara.run_branch_migrate")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.run_branch_dry_run")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.reset_preview_dir")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.get_copybara_tokens")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.rewrite_copybara_config")
+    @patch("buildscripts.copybara.sync_repo_with_copybara.list_pending_source_commits")
+    def test_run_branch_commit_sync_reuses_auth_retry_tokens(
+        self,
+        mock_list_pending_source_commits,
+        mock_rewrite_copybara_config,
+        mock_get_copybara_tokens,
+        mock_reset_preview_dir,
+        mock_run_branch_dry_run,
+        mock_run_branch_migrate,
+    ):
+        sync = sync_repo_with_copybara.PreparedBranchSync(
+            branch="v8.2",
+            source_ref="headsha",
+            config_sha="local",
+            workflow_name="prod_v8.2",
+            config_file=Path("/tmp/copy.bara.sky"),
+            preview_dir=Path("/tmp/preview"),
+            docker_command=("echo", "copybara"),
+            expansions={"version_id": "patch123"},
+            copybara_config=sync_repo_with_copybara.CopybaraConfig(
+                source=sync_repo_with_copybara.CopybaraRepoConfig(
+                    git_url=sync_repo_with_copybara.auth_github_url(
+                        sync_repo_with_copybara.SOURCE_REPO_URL,
+                        "initial-source-token",
+                    ),
+                    repo_name="10gen/mongo",
+                    branch="v8.2",
+                    ref="headsha",
+                ),
+                destination=sync_repo_with_copybara.CopybaraRepoConfig(
+                    git_url=sync_repo_with_copybara.auth_github_url(
+                        sync_repo_with_copybara.PUBLIC_GITHUB_APP_REPO_URL,
+                        "initial-prod-token",
+                    ),
+                    repo_name="mongodb/mongo",
+                    branch="v8.2",
+                ),
+            ),
+        )
+        initial_tokens = {
+            sync_repo_with_copybara.SOURCE_REPO_URL: "initial-source-token",
+            sync_repo_with_copybara.PUBLIC_GITHUB_APP_REPO_URL: "initial-prod-token",
+            sync_repo_with_copybara.TEST_REPO_URL: "initial-test-token",
+        }
+        refreshed_tokens = {
+            sync_repo_with_copybara.SOURCE_REPO_URL: "refreshed-source-token",
+            sync_repo_with_copybara.PUBLIC_GITHUB_APP_REPO_URL: "refreshed-prod-token",
+            sync_repo_with_copybara.TEST_REPO_URL: "refreshed-test-token",
+        }
+        mock_list_pending_source_commits.return_value = [
+            make_source_commit("commit1"),
+            make_source_commit("commit2"),
+        ]
+
+        def dry_run_side_effect(commit_sync, on_auth_refresh=None):
+            if commit_sync.source_ref == "commit1":
+                on_auth_refresh(refreshed_tokens)
+            return sync_repo_with_copybara.BranchDryRunResult(branch=commit_sync.branch)
+
+        mock_run_branch_dry_run.side_effect = dry_run_side_effect
+
+        sync_repo_with_copybara.run_branch_commit_sync(sync, initial_tokens)
+
+        mock_get_copybara_tokens.assert_not_called()
+        self.assertEqual(
+            mock_run_branch_migrate.call_args_list[0].args[0].copybara_config.source.git_url,
+            sync_repo_with_copybara.auth_github_url(
+                sync_repo_with_copybara.SOURCE_REPO_URL,
+                "refreshed-source-token",
+            ),
+        )
+        self.assertEqual(
+            [call_args.args[1] for call_args in mock_rewrite_copybara_config.call_args_list],
+            [initial_tokens, refreshed_tokens],
+        )
 
     @patch("buildscripts.copybara.sync_repo_with_copybara.run_branch_migrate")
     @patch("buildscripts.copybara.sync_repo_with_copybara.run_branch_dry_run")
@@ -3471,7 +4307,7 @@ class TestMainWorkflow(unittest.TestCase):
             ),
         )
         failure = sync_repo_with_copybara.BranchSyncError("v8.2", "dry-run", "boom")
-        mock_list_pending_source_commits.return_value = ["commit1"]
+        mock_list_pending_source_commits.return_value = [make_source_commit("commit1")]
         mock_get_copybara_tokens.return_value = {"source": "fresh-token"}
         mock_run_branch_dry_run.side_effect = failure
 
@@ -3524,7 +4360,10 @@ class TestMainWorkflow(unittest.TestCase):
                 ),
             ),
         )
-        mock_list_pending_source_commits.return_value = ["commit1", "commit2"]
+        mock_list_pending_source_commits.return_value = [
+            make_source_commit("commit1"),
+            make_source_commit("commit2"),
+        ]
         mock_get_copybara_tokens.return_value = {"source": "fresh-token"}
         mock_run_branch_dry_run.side_effect = [
             sync_repo_with_copybara.BranchDryRunResult(branch="v8.2", noop=True),
@@ -3544,7 +4383,7 @@ class TestMainWorkflow(unittest.TestCase):
         )
         mock_run_branch_migrate.assert_called_once()
         self.assertEqual(mock_run_branch_migrate.call_args.args[0].source_ref, "commit2")
-        self.assertEqual(mock_get_copybara_tokens.call_args_list, [call(sync.expansions)] * 2)
+        mock_get_copybara_tokens.assert_not_called()
         self.assertEqual(mock_reset_preview_dir.call_count, 4)
 
     @patch("buildscripts.copybara.sync_repo_with_copybara.get_remote_branch_head")
