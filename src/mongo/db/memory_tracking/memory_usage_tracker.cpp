@@ -161,9 +161,18 @@ MemoryUsageTracker MemoryUsageTracker::makeFreshMemoryUsageTracker() const {
     return MemoryUsageTracker(_baseTracker._base, allowDiskUse(), maxAllowedMemoryUsageBytes());
 }
 
-void DeduplicatorReporter::add(int64_t diff) {
-    _inUseTrackedMemoryBytes += diff;
-    _inUseRecordIdCount++;
+void DeduplicatorReporter::add(int64_t bytesDiff, int64_t recordsDiff) {
+
+    _inUseTrackedMemoryBytes += bytesDiff;
+    _inUseRecordIdCount += recordsDiff;
+    tassert(12579700,
+            str::stream() << "Underflow in record count tracking, attempting to add " << recordsDiff
+                          << " but only " << _inUseRecordIdCount - recordsDiff << " available",
+            _inUseRecordIdCount >= 0);
+    tassert(12579701,
+            str::stream() << "Underflow in memory tracking, attempting to add " << bytesDiff
+                          << " but only " << _inUseTrackedMemoryBytes - bytesDiff << " available",
+            _inUseTrackedMemoryBytes >= 0);
 
     // When chunking is enabled, we report memory usage in discrete chunks (0, chunkSize,
     // 2*chunkSize, ...) rather than exact values.

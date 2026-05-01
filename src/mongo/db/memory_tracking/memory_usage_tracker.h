@@ -239,7 +239,7 @@ public:
 
     DeduplicatorReporter(std::function<void(int64_t, int64_t)> callback, int64_t chunkSize);
 
-    void add(int64_t diff);
+    void add(int64_t bytesDiff, int64_t recordsDiff = 1);
 
 private:
     // Tracks the current memory footprint.

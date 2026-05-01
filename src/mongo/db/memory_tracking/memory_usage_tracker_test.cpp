@@ -287,5 +287,83 @@ TEST_F(MemoryUsageTrackerTest, MemoryUsageTokenWith) {
     }
 }
 
+class DeduplicatorReporterTest : public unittest::Test {
+public:
+    DeduplicatorReporterTest()
+        : _reporter(
+              [this](int64_t bytesDelta, int64_t recordsDelta) {
+                  _lastBytesDelta = bytesDelta;
+                  _lastRecordsDelta = recordsDelta;
+                  ++_callbackCount;
+              },
+              /* chunkSize = */ 1) {}
+
+protected:
+    int64_t _lastBytesDelta = 0;
+    int64_t _lastRecordsDelta = 0;
+    int _callbackCount = 0;
+    DeduplicatorReporter _reporter;
+};
+
+TEST_F(DeduplicatorReporterTest, DefaultRecordsDiffIsOne) {
+    _reporter.add(100);
+    ASSERT_EQ(_callbackCount, 1);
+    ASSERT_EQ(_lastBytesDelta, 100);
+    ASSERT_EQ(_lastRecordsDelta, 1);
+}
+
+TEST_F(DeduplicatorReporterTest, ExplicitRecordsDiffIsReported) {
+    _reporter.add(100, 5);
+    ASSERT_EQ(_callbackCount, 1);
+    ASSERT_EQ(_lastBytesDelta, 100);
+    ASSERT_EQ(_lastRecordsDelta, 5);
+}
+
+TEST_F(DeduplicatorReporterTest, NegativeRecordsDiffDecrementsCount) {
+    _reporter.add(100);
+    _reporter.add(50, -1);
+    ASSERT_EQ(_callbackCount, 2);
+    ASSERT_EQ(_lastBytesDelta, 50);
+    ASSERT_EQ(_lastRecordsDelta, -1);
+}
+
+TEST_F(DeduplicatorReporterTest, NoCallbackWhenBytesUnchanged) {
+    _reporter.add(0, 5);
+    ASSERT_EQ(_callbackCount, 0);
+}
+
+TEST_F(DeduplicatorReporterTest, RecordsDeltaAccumulatesUntilChunkCrossing) {
+    DeduplicatorReporter reporter(
+        [this](int64_t bytesDelta, int64_t recordsDelta) {
+            _lastBytesDelta = bytesDelta;
+            _lastRecordsDelta = recordsDelta;
+            ++_callbackCount;
+        },
+        100);
+
+    reporter.add(50, 3);  // bytes=50, within chunk [0,100), no callback
+    ASSERT_EQ(_callbackCount, 0);
+
+    reporter.add(100, 2);  // bytes=150, crosses into chunk [100,200), reports accumulated delta
+    ASSERT_EQ(_callbackCount, 1);
+    ASSERT_EQ(_lastBytesDelta, 100);
+    ASSERT_EQ(_lastRecordsDelta, 5);
+}
+
+using DeduplicatorReporterTestDeathTest = DeduplicatorReporterTest;
+DEATH_TEST_F(DeduplicatorReporterTestDeathTest,
+             RecordCountUnderflowIsDisallowed,
+             "Underflow in record count tracking") {
+    _reporter.add(100);    // count = 1
+    _reporter.add(0, -2);  // would bring count to -1
+}
+
+DEATH_TEST_F(DeduplicatorReporterTestDeathTest,
+             MemoryUnderflowIsDisallowed,
+             "Underflow in memory tracking") {
+    _reporter.add(100);   // bytes = 100
+    _reporter.add(-200);  // would bring bytes to -100
+}
+
 }  // namespace
 }  // namespace mongo
