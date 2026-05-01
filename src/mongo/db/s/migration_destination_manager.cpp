@@ -510,42 +510,53 @@ Status MigrationDestinationManager::start(OperationContext* opCtx,
                                           ScopedReceiveChunk scopedReceiveChunk,
                                           const StartChunkCloneRequest& cloneRequest,
                                           const WriteConcernOptions& writeConcern) {
+    boost::optional<UUID> migrationId;
+    stdx::thread migrateThreadHandle;
+    std::unique_ptr<SessionCatalogMigrationDestination> sessionMigration;
+    {
+        std::lock_guard lk(_mutex);
+        migrationId = _migrationId;
+        migrateThreadHandle = std::exchange(_migrateThreadHandle, {});
+        sessionMigration = std::exchange(_sessionMigration, nullptr);
+    }
+
     // Wait for the session migration thread and the migrate thread to finish. Do not hold the
     // _mutex while waiting since it could lead to deadlock. It is safe to join _sessionMigration
     // and _migrateThreadHandle without holding the _mutex since they are only (re)set in start()
     // and restoreRecoveredMigrationState() and both of them require a ScopedReceiveChunk which
     // guarantees that there can only be one start() and restoreRecoveredMigrationState() call at
     // any given time.
-    if (_sessionMigration && _sessionMigration->joinable()) {
+    if (sessionMigration && sessionMigration->joinable()) {
         LOGV2_DEBUG(8991402,
                     2,
                     "Start waiting for the session migration thread for the previous migration to "
                     "complete before starting a new migration",
-                    "previousMigrationSessionId"_attr = _sessionMigration->getMigrationSessionId(),
+                    "previousMigrationSessionId"_attr = sessionMigration->getMigrationSessionId(),
                     "currentMigrationSessionId"_attr = cloneRequest.getSessionId(),
-                    "previousMigrationId"_attr = _migrationId,
+                    "previousMigrationId"_attr = migrationId,
                     "currentMigrationId"_attr = cloneRequest.getMigrationId());
-        _sessionMigration->join();
+        sessionMigration->join();
         LOGV2_DEBUG(8991403,
                     2,
                     "Finished waiting for the session migration thread for the previous migration "
                     "to complete before starting a new migration",
-                    "previousMigrationId"_attr = _migrationId,
+                    "previousMigrationId"_attr = migrationId,
                     "currentMigrationId"_attr = cloneRequest.getMigrationId());
     }
-    if (_migrateThreadHandle.joinable()) {
+
+    if (migrateThreadHandle.joinable()) {
         LOGV2_DEBUG(8991404,
                     2,
                     "Start waiting for the migrate thread for the previous migration to "
                     "complete before starting a new migration",
-                    "previousMigrationId"_attr = _migrationId,
+                    "previousMigrationId"_attr = migrationId,
                     "currentMigrationId"_attr = cloneRequest.getMigrationId());
-        _migrateThreadHandle.join();
+        migrateThreadHandle.join();
         LOGV2_DEBUG(8991405,
                     2,
                     "Finished waiting for the migrate thread for the previous migration to "
                     "complete before starting a new migration",
-                    "previousMigrationId"_attr = _migrationId,
+                    "previousMigrationId"_attr = migrationId,
                     "currentMigrationId"_attr = cloneRequest.getMigrationId());
     }
 
@@ -608,6 +619,14 @@ Status MigrationDestinationManager::restoreRecoveredMigrationState(
     OperationContext* opCtx,
     ScopedReceiveChunk scopedReceiveChunk,
     const MigrationRecipientRecoveryDocument& recoveryDoc) {
+    stdx::thread migrateThreadHandle;
+    boost::optional<UUID> migrationId;
+    {
+        std::lock_guard lk(_mutex);
+        migrationId = _migrationId;
+        migrateThreadHandle = std::exchange(_migrateThreadHandle, {});
+    }
+
     // Wait for the migrate thread to finish. Do not hold the _mutex while waiting since it could
     // lead to deadlock. It is safe to join _migrateThreadHandle without holding the _mutex since it
     // is only (re)set in start() and restoreRecoveredMigrationState() and both of them require a
@@ -615,18 +634,18 @@ Status MigrationDestinationManager::restoreRecoveredMigrationState(
     // restoreRecoveredMigrationState() call at any given time. It is not necessary to wait for
     // session migration thread since by design the recovery doc cannot exist if the session
     // migration has not finished.
-    if (_migrateThreadHandle.joinable()) {
+    if (migrateThreadHandle.joinable()) {
         LOGV2_DEBUG(
             8991406,
             2,
             "Start waiting for the existing migrate thread to complete before recovering it",
-            "migrationId"_attr = _migrationId);
-        _migrateThreadHandle.join();
+            "migrationId"_attr = migrationId);
+        migrateThreadHandle.join();
         LOGV2_DEBUG(
             8991407,
             2,
             "Finished waiting for the existing migrate thread to complete before recovering it",
-            "migrationId"_attr = _migrationId);
+            "migrationId"_attr = migrationId);
     }
 
     std::lock_guard<std::mutex> lk(_mutex);
@@ -2198,6 +2217,8 @@ void MigrationDestinationManager::awaitCriticalSectionReleaseSignalAndCompleteMi
 }
 
 void MigrationDestinationManager::_cancelAndJoinMigrateThread() {
+    boost::optional<UUID> migrationId;
+    stdx::thread migrateThreadHandle;
     boost::optional<SharedSemiFuture<State>> migrateThreadFinishedFuture;
     {
         std::lock_guard<std::mutex> sl(_mutex);
@@ -2207,6 +2228,9 @@ void MigrationDestinationManager::_cancelAndJoinMigrateThread() {
         if (_migrateThreadFinishedPromise) {
             migrateThreadFinishedFuture = _migrateThreadFinishedPromise->getFuture();
         }
+
+        migrationId = _migrationId;
+        migrateThreadHandle = std::exchange(_migrateThreadHandle, {});
     }
 
     // Wait for the migrateThread to finish.
@@ -2218,16 +2242,16 @@ void MigrationDestinationManager::_cancelAndJoinMigrateThread() {
         migrateThreadFinishedFuture->wait();
     }
 
-    if (_migrateThreadHandle.joinable()) {
+    if (migrateThreadHandle.joinable()) {
         LOGV2_DEBUG(12510301,
                     2,
                     "Start waiting for the existing migrate thread to complete",
-                    "migrationId"_attr = _migrationId);
-        _migrateThreadHandle.join();
+                    "migrationId"_attr = migrationId);
+        migrateThreadHandle.join();
         LOGV2_DEBUG(12510302,
                     2,
                     "Finished waiting for the existing migrate thread to complete",
-                    "migrationId"_attr = _migrationId);
+                    "migrationId"_attr = migrationId);
     }
 }
 
