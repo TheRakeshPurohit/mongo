@@ -182,13 +182,10 @@ public:
         dbtests::WriteContextForTests ctx(&_opCtx, ns());
         WriteUnitOfWork wuow(&_opCtx);
 
-        // TODO(SERVER-103411): Investigate usage validity of CollectionPtr::CollectionPtr_UNSAFE
-        CollectionPtr c = CollectionPtr::CollectionPtr_UNSAFE(
-            CollectionCatalog::get(&_opCtx)->lookupCollectionByNamespace(&_opCtx, nss()));
+        const Collection* c =
+            CollectionCatalog::get(&_opCtx)->lookupCollectionByNamespace(&_opCtx, nss());
         if (!c) {
-            // TODO(SERVER-103411): Investigate usage validity of
-            // CollectionPtr::CollectionPtr_UNSAFE
-            c = CollectionPtr::CollectionPtr_UNSAFE(ctx.db()->createCollection(&_opCtx, nss()));
+            c = ctx.db()->createCollection(&_opCtx, nss());
         }
 
         ASSERT(c->getIndexCatalog()->haveIdIndex(&_opCtx));
@@ -252,15 +249,11 @@ protected:
     int count() const {
         Lock::GlobalWrite lk(&_opCtx);
         Database* db = getDbOrCreate(&_opCtx, nss());
-        // TODO(SERVER-103411): Investigate usage validity of
-        // CollectionPtr::CollectionPtr_UNSAFE
-        CollectionPtr coll = CollectionPtr::CollectionPtr_UNSAFE(
-            CollectionCatalog::get(&_opCtx)->lookupCollectionByNamespace(&_opCtx, nss()));
+        const Collection* coll =
+            CollectionCatalog::get(&_opCtx)->lookupCollectionByNamespace(&_opCtx, nss());
         if (!coll) {
             WriteUnitOfWork wunit(&_opCtx);
-            // TODO(SERVER-103411): Investigate usage validity of
-            // CollectionPtr::CollectionPtr_UNSAFE
-            coll = CollectionPtr::CollectionPtr_UNSAFE(db->createCollection(&_opCtx, nss()));
+            coll = db->createCollection(&_opCtx, nss());
             wunit.commit();
         }
 
