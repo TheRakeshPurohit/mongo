@@ -1,7 +1,7 @@
 /**
  * Tests apply_pipeline_suffix_dependencies for extension source stages, verifies that
  * applyPipelineSuffixDependencies is not invoked on transform stages, and exercises mixed
- * pipelines where both server and extension stages participate in dependency analysis.
+ * pipelines where both host and extension stages participate in dependency analysis.
  *
  * $trackDepsSource is a source stage that accepts {meta: <name>, var: <name>} and records whether that
  * metadata field / variable is needed by its downstream pipeline, and whether the full document is
@@ -15,7 +15,7 @@
  * applyPipelineSuffixDependencies to conditionally produce $score metadata based on whether the
  * suffix references it, and declares providedMetadataFields: ["score"] in its static properties.
  *
- * $addFieldsMatch desugars into server-side $addFields + $match stages at parse time.
+ * $addFieldsMatch desugars into host-side $addFields + $match stages at parse time.
  *
  * @tags: [
  *   featureFlagExtensionsAPI,
@@ -27,152 +27,158 @@ import {checkPlatformCompatibleWithExtensions, withExtensions} from "jstests/noP
 
 checkPlatformCompatibleWithExtensions();
 
-function assertDeps(coll, metaName, varName, downstream, expectedMeta, expectedVar, expectedWholeDoc) {
-    const pipeline = [{$trackDepsSource: {meta: metaName, var: varName}}, ...downstream];
+/**
+ * Runs a pipeline and verifies that the specified fields agree across all shards.
+ */
+function runPipelineAndCheckShards(coll, pipeline, fields) {
     const results = coll.aggregate(pipeline).toArray();
-    assert.gte(results.length, 1, `Expected at least one result for pipeline: ${tojson(pipeline)}`);
-    // On a sharded cluster each shard emits one document. The dependency
-    // analysis result is identical across shards, so verify they all agree.
+    const pipelineStr = tojson(pipeline);
+    assert.gte(results.length, 1, `Expected at least one result for pipeline: ${pipelineStr}`);
     for (let i = 1; i < results.length; i++) {
-        assert.eq(
-            results[i].neededMeta,
-            results[0].neededMeta,
-            `Shard results disagree on neededMeta for pipeline: ${tojson(pipeline)}`,
-        );
-        assert.eq(
-            results[i].neededVar,
-            results[0].neededVar,
-            `Shard results disagree on neededVar for pipeline: ${tojson(pipeline)}`,
-        );
-        assert.eq(
-            results[i].neededWholeDoc,
-            results[0].neededWholeDoc,
-            `Shard results disagree on neededWholeDoc for pipeline: ${tojson(pipeline)}`,
-        );
+        for (const field of fields) {
+            assert.eq(
+                results[i][field],
+                results[0][field],
+                `Shard results disagree on ${field} for pipeline: ${pipelineStr}`,
+            );
+        }
     }
-    const {neededMeta, neededVar, neededWholeDoc} = results[0];
-    assert.eq(neededMeta, expectedMeta, `neededMeta for pipeline: ${tojson(pipeline)}`);
-    assert.eq(neededVar, expectedVar, `neededVar for pipeline: ${tojson(pipeline)}`);
-    assert.eq(neededWholeDoc, expectedWholeDoc, `neededWholeDoc for pipeline: ${tojson(pipeline)}`);
+    return results;
+}
+
+function assertDeps(coll, downstream, opts) {
+    const {
+        metaName = "searchSequenceToken",
+        varName = "NOW",
+        expectedMeta,
+        expectedVar,
+        expectedWholeDoc,
+        expectedNeededFields,
+    } = opts;
+    const pipeline = [{$trackDepsSource: {meta: metaName, var: varName}}, ...downstream];
+    const pipelineStr = tojson(pipeline);
+    const results = runPipelineAndCheckShards(coll, pipeline, [
+        "neededMeta",
+        "neededVar",
+        "neededWholeDoc",
+        "neededFields",
+    ]);
+    const {neededMeta, neededVar, neededWholeDoc, neededFields} = results[0];
+    assert.eq(neededMeta, expectedMeta, `neededMeta for pipeline: ${pipelineStr}`);
+    assert.eq(neededVar, expectedVar, `neededVar for pipeline: ${pipelineStr}`);
+    assert.eq(neededWholeDoc, expectedWholeDoc, `neededWholeDoc for pipeline: ${pipelineStr}`);
+    if (expectedNeededFields !== undefined) {
+        assert.eq(neededFields, expectedNeededFields, `neededFields for pipeline: ${pipelineStr}`);
+    }
 }
 
 function runSourceTests(coll) {
     // Metadata not referenced downstream, with or without additional stages.
-    assertDeps(
-        coll,
-        "searchSequenceToken",
-        "NOW",
-        [],
-        false /*expectedMeta*/,
-        false /*expectedVar*/,
-        false /*expectedWholeDoc*/,
-    );
-    assertDeps(
-        coll,
-        "searchScore",
-        "NOW",
-        [{$limit: 10}, {$project: {neededMeta: 1, neededVar: 1, neededWholeDoc: 1}}],
-        false /*expectedMeta*/,
-        false /*expectedVar*/,
-        false /*expectedWholeDoc*/,
-    );
+    assertDeps(coll, [], {expectedMeta: false, expectedVar: false, expectedWholeDoc: false});
+    assertDeps(coll, [{$limit: 10}, {$project: {neededMeta: 1, neededVar: 1, neededWholeDoc: 1}}], {
+        expectedMeta: false,
+        expectedVar: false,
+        expectedWholeDoc: false,
+    });
 
     // Metadata referenced downstream.
     assertDeps(
         coll,
-        "searchSequenceToken",
-        "NOW",
         [{$project: {token: {$meta: "searchSequenceToken"}, neededMeta: 1, neededVar: 1, neededWholeDoc: 1}}],
-        true /*expectedMeta*/,
-        false /*expectedVar*/,
-        false /*expectedWholeDoc*/,
+        {expectedMeta: true, expectedVar: false, expectedWholeDoc: false},
     );
     assertDeps(
         coll,
-        "searchSequenceToken",
-        "NOW",
         [
             {$limit: 100},
             {$project: {token: {$meta: "searchSequenceToken"}, neededMeta: 1, neededVar: 1, neededWholeDoc: 1}},
         ],
-        true /*expectedMeta*/,
-        false /*expectedVar*/,
-        false /*expectedWholeDoc*/,
+        {expectedMeta: true, expectedVar: false, expectedWholeDoc: false},
     );
 
     // Variable referenced downstream.
-    assertDeps(
-        coll,
-        "searchSequenceToken",
-        "NOW",
-        [{$addFields: {timestamp: "$$NOW"}}],
-        false /*expectedMeta*/,
-        true /*expectedVar*/,
-        true /*expectedWholeDoc*/,
-    );
-    assertDeps(
-        coll,
-        "searchSequenceToken",
-        "NOW",
-        [{$limit: 100}, {$addFields: {timestamp: "$$NOW"}}],
-        false /*expectedMeta*/,
-        true /*expectedVar*/,
-        true /*expectedWholeDoc*/,
-    );
+    assertDeps(coll, [{$addFields: {timestamp: "$$NOW"}}], {
+        expectedMeta: false,
+        expectedVar: true,
+        expectedWholeDoc: true,
+    });
+    assertDeps(coll, [{$limit: 100}, {$addFields: {timestamp: "$$NOW"}}], {
+        expectedMeta: false,
+        expectedVar: true,
+        expectedWholeDoc: true,
+    });
 
     // Variable referenced downstream — USER_ROLES.
-    assertDeps(
-        coll,
-        "searchScore",
-        "USER_ROLES",
-        [{$addFields: {ct: "$$USER_ROLES"}}],
-        false /*expectedMeta*/,
-        true /*expectedVar*/,
-        true /*expectedWholeDoc*/,
-    );
+    assertDeps(coll, [{$addFields: {ct: "$$USER_ROLES"}}], {
+        metaName: "searchScore",
+        varName: "USER_ROLES",
+        expectedMeta: false,
+        expectedVar: true,
+        expectedWholeDoc: true,
+    });
 
     // Both metadata and variable referenced downstream.
-    assertDeps(
-        coll,
-        "searchSequenceToken",
-        "NOW",
-        [{$addFields: {token: {$meta: "searchSequenceToken"}, timestamp: "$$NOW"}}],
-        true /*expectedMeta*/,
-        true /*expectedVar*/,
-        true /*expectedWholeDoc*/,
-    );
+    assertDeps(coll, [{$addFields: {token: {$meta: "searchSequenceToken"}, timestamp: "$$NOW"}}], {
+        expectedMeta: true,
+        expectedVar: true,
+        expectedWholeDoc: true,
+    });
 
     // $addFields implies needsWholeDocument.
-    assertDeps(
-        coll,
-        "searchSequenceToken",
-        "NOW",
-        [{$addFields: {score: {$meta: "searchSequenceToken"}}}],
-        true /*expectedMeta*/,
-        false /*expectedVar*/,
-        true /*expectedWholeDoc*/,
-    );
+    assertDeps(coll, [{$addFields: {score: {$meta: "searchSequenceToken"}}}], {
+        expectedMeta: true,
+        expectedVar: false,
+        expectedWholeDoc: true,
+    });
 
     // needsWholeDocument: inclusive projection does not need the whole document.
-    assertDeps(
-        coll,
-        "searchSequenceToken",
-        "NOW",
-        [{$project: {neededMeta: 1, neededVar: 1, neededWholeDoc: 1}}],
-        false /*expectedMeta*/,
-        false /*expectedVar*/,
-        false /*expectedWholeDoc*/,
-    );
+    assertDeps(coll, [{$project: {neededMeta: 1, neededVar: 1, neededWholeDoc: 1}}], {
+        expectedMeta: false,
+        expectedVar: false,
+        expectedWholeDoc: false,
+    });
 
     // Variable not referenced downstream — should not be needed.
-    assertDeps(
+    assertDeps(coll, [{$addFields: {timestamp: "$$NOW"}}], {
+        metaName: "searchScore",
+        varName: "USER_ROLES",
+        expectedMeta: false,
+        expectedVar: false,
+        expectedWholeDoc: true,
+    });
+}
+
+function assertNeededFields(coll, downstream, expectedNeededFields) {
+    const pipeline = [{$trackDepsSource: {meta: "searchSequenceToken", var: "NOW"}}, ...downstream];
+    const results = runPipelineAndCheckShards(coll, pipeline, ["neededFields"]);
+    assert.eq(results[0].neededFields, expectedNeededFields, `neededFields for pipeline: ${tojson(pipeline)}`);
+}
+
+function runNeededFieldsTests(coll) {
+    // No downstream stages — neededFields should be empty.
+    assertNeededFields(coll, [], []);
+
+    // $addFields implies needsWholeDocument — neededFields should be null.
+    assertNeededFields(coll, [{$addFields: {extra: 1}}], null);
+
+    // Inclusive projection that includes tracking fields so we can read the result.
+    assertNeededFields(coll, [{$project: {a: 1, b: 1, neededFields: 1, _id: 0}}], ["a", "b", "neededFields"]);
+
+    // Nested field paths.
+    assertNeededFields(
         coll,
-        "searchScore",
-        "USER_ROLES",
-        [{$addFields: {timestamp: "$$NOW"}}],
-        false /*expectedMeta*/,
-        false /*expectedVar*/,
-        true /*expectedWholeDoc*/,
+        [{$project: {"a.b": 1, "c.d.e": 1, neededFields: 1, _id: 0}}],
+        ["a.b", "c.d.e", "neededFields"],
+    );
+
+    // $limit followed by inclusive projection — fields flow through $limit.
+    assertNeededFields(coll, [{$limit: 5}, {$project: {foo: 1, neededFields: 1, _id: 0}}], ["foo", "neededFields"]);
+
+    // Metadata projection with inclusive field projection — fields reported independently.
+    assertNeededFields(
+        coll,
+        [{$project: {score: {$meta: "searchSequenceToken"}, name: 1, neededFields: 1, _id: 0}}],
+        ["name", "neededFields"],
     );
 }
 
@@ -200,7 +206,7 @@ function runTransformNegativeTests(coll) {
         {$addFields: {token: {$meta: "searchSequenceToken"}, timestamp: "$$NOW"}},
     ]);
 
-    // Mixed suffix with both extension transform and server stages. The source stage's suffix
+    // Mixed suffix with both extension transform and host stages. The source stage's suffix
     // deps should reflect the full suffix. The transform should not be invoked.
     {
         const pipeline = [
@@ -281,31 +287,34 @@ function runMixedPipelineTests(coll) {
     // Extension source ($trackDepsSource) with a suffix that includes a desugared extension stage
     // ($addFieldsMatch). The desugared host stages should participate in dep analysis: $addFields
     // implies needsWholeDocument.
+    assertDeps(coll, [{$addFieldsMatch: {field: "extra", value: 1, filter: {$gt: ["$extra", 0]}}}], {
+        expectedMeta: false,
+        expectedVar: false,
+        expectedWholeDoc: true,
+    });
+
+    // Desugared $addFieldsMatch in suffix followed by an inclusive $project. The $project
+    // sets EXHAUSTIVE_FIELDS so the source only needs the projected fields, not the whole doc.
     assertDeps(
         coll,
-        "searchSequenceToken",
-        "NOW",
-        [{$addFieldsMatch: {field: "extra", value: 1, filter: {$gt: ["$extra", 0]}}}],
-        false /*expectedMeta*/,
-        false /*expectedVar*/,
-        true /*expectedWholeDoc*/,
+        [
+            {$addFieldsMatch: {field: "extra", value: 1, filter: {$gt: ["$extra", 0]}}},
+            {$project: {neededMeta: 1, neededVar: 1, neededWholeDoc: 1}},
+        ],
+        {expectedMeta: false, expectedVar: false, expectedWholeDoc: false},
     );
 
-    // Extension source + desugared extension stage + host stage referencing metadata. The
-    // $addFieldsMatch desugars into host stages, and a downstream $project references metadata. The
-    // inclusive $project limits field deps (needsWholeDoc: false) but the metadata reference is
-    // still detected.
+    // Extension source + desugared extension stage + host stage referencing metadata.
+    // The $addFieldsMatch desugars into host stages, and a downstream $project references
+    // metadata. The inclusive $project limits field deps (needsWholeDoc: false) but the
+    // metadata reference is still detected.
     assertDeps(
         coll,
-        "searchSequenceToken",
-        "NOW",
         [
             {$addFieldsMatch: {field: "extra", value: 1, filter: {$gt: ["$extra", 0]}}},
             {$project: {token: {$meta: "searchSequenceToken"}, neededMeta: 1, neededVar: 1, neededWholeDoc: 1}},
         ],
-        true /*expectedMeta*/,
-        false /*expectedVar*/,
-        false /*expectedWholeDoc*/,
+        {expectedMeta: true, expectedVar: false, expectedWholeDoc: false},
     );
 
     // Extension source + extension transform + desugared extension suffix. Combines all of
@@ -339,13 +348,16 @@ function runMixedPipelineTests(coll) {
     // Extension source + extension transform + variable reference through desugared stages.
     assertDeps(
         coll,
-        "searchSequenceToken",
-        "NOW",
         [{$trackDepsTransform: {}}, {$addFieldsMatch: {field: "ts", value: "$$NOW", filter: {$gt: ["$ts", 0]}}}],
-        false /*expectedMeta*/,
-        true /*expectedVar*/,
-        true /*expectedWholeDoc*/,
+        {expectedMeta: false, expectedVar: true, expectedWholeDoc: true},
     );
+}
+
+function runAllTestSuites(coll) {
+    runSourceTests(coll);
+    runNeededFieldsTests(coll);
+    runTransformNegativeTests(coll);
+    runMixedPipelineTests(coll);
 }
 
 function runTests(conn, shardingTest) {
@@ -360,9 +372,7 @@ function runTests(conn, shardingTest) {
 
     // Run on unsharded collection. On mongos this exercises the fromRouter path where the full
     // pipeline is forwarded to a single shard without splitting.
-    runSourceTests(coll);
-    runTransformNegativeTests(coll);
-    runMixedPipelineTests(coll);
+    runAllTestSuites(coll);
 
     if (shardingTest) {
         assert.commandWorked(db.adminCommand({shardCollection: coll.getFullName(), key: {_id: 1}}));
@@ -389,9 +399,7 @@ function runTests(conn, shardingTest) {
         }
 
         // Re-run on the now-sharded collection, where the pipeline splits across shards.
-        runSourceTests(coll);
-        runTransformNegativeTests(coll);
-        runMixedPipelineTests(coll);
+        runAllTestSuites(coll);
     }
 }
 

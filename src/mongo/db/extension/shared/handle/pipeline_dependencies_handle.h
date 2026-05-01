@@ -28,13 +28,17 @@
  */
 #pragma once
 
+#include "mongo/bson/bsonobj.h"
 #include "mongo/db/extension/public/api.h"
 #include "mongo/db/extension/shared/byte_buf_utils.h"
+#include "mongo/db/extension/shared/handle/byte_buf_handle.h"
 #include "mongo/db/extension/shared/handle/handle.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/modules.h"
 
 #include <string_view>
+
+#include <boost/optional.hpp>
 
 namespace mongo::extension {
 
@@ -84,6 +88,22 @@ public:
         return result;
     }
 
+    /**
+     * Returns a BSONObj containing a BSON array of dotted field-path strings representing
+     * the specific fields needed by the downstream pipeline. Returns boost::none when
+     * needs_whole_document is true.
+     */
+    boost::optional<BSONObj> getNeededFields() const {
+        ::MongoExtensionByteBuf* buf{nullptr};
+        invokeCAndConvertStatusToException(
+            [&]() { return _vtable().get_needed_fields(get(), &buf); });
+        if (!buf) {
+            return boost::none;
+        }
+        ExtensionByteBufHandle ownedBuf{buf};
+        return bsonObjFromByteView(ownedBuf->getByteView()).getOwned();
+    }
+
     static void assertVTableConstraints(const VTable_t& vtable) {
         tassert(12200101,
                 "PipelineDependencies 'needs_metadata' is null",
@@ -94,6 +114,9 @@ public:
         tassert(12200103,
                 "PipelineDependencies 'needs_whole_document' is null",
                 vtable.needs_whole_document != nullptr);
+        tassert(12556400,
+                "PipelineDependencies 'get_needed_fields' is null",
+                vtable.get_needed_fields != nullptr);
     }
 };
 

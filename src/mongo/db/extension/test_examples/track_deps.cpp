@@ -44,9 +44,13 @@ using namespace mongo;
  *   var:  <string>  — a builtin variable name to track via needsVariable()
  *
  * Emits one document:
- *   {_id: 0, neededMeta: <bool>, neededVar: <bool>, neededWholeDoc: <bool>}
+ *   {_id: 0,
+ *    neededMeta: <bool>,
+ *    neededVar: <bool>,
+ *    neededWholeDoc: <bool>,
+ *    neededFields: <array|null>}
  * reflecting whether the downstream pipeline referenced the specified metadata field, variable,
- * or the full document.
+ * or the full document, and which specific fields are needed.
  */
 
 class TrackDepsExecStage : public sdk::ExecAggStageSource {
@@ -54,11 +58,13 @@ public:
     TrackDepsExecStage(std::string_view stageName,
                        bool neededMeta,
                        bool neededVar,
-                       bool neededWholeDoc)
+                       bool neededWholeDoc,
+                       boost::optional<BSONObj> neededFields)
         : sdk::ExecAggStageSource(stageName),
           _neededMeta(neededMeta),
           _neededVar(neededVar),
-          _neededWholeDoc(neededWholeDoc) {}
+          _neededWholeDoc(neededWholeDoc),
+          _neededFields(std::move(neededFields)) {}
 
     extension::ExtensionGetNextResult getNext(const sdk::QueryExecutionContextHandle&,
                                               ::MongoExtensionExecAggStage*) override {
@@ -66,10 +72,18 @@ public:
             return extension::ExtensionGetNextResult::eof();
         }
         _emitted = true;
+        BSONObjBuilder builder;
+        builder.append("_id", 0);
+        builder.appendBool("neededMeta", _neededMeta);
+        builder.appendBool("neededVar", _neededVar);
+        builder.appendBool("neededWholeDoc", _neededWholeDoc);
+        if (_neededFields) {
+            builder.appendArray("neededFields", *_neededFields);
+        } else {
+            builder.appendNull("neededFields");
+        }
         return extension::ExtensionGetNextResult::advanced(
-            extension::ExtensionBSONObj::makeAsByteBuf(
-                BSON("_id" << 0 << "neededMeta" << _neededMeta << "neededVar" << _neededVar
-                           << "neededWholeDoc" << _neededWholeDoc)));
+            extension::ExtensionBSONObj::makeAsByteBuf(builder.obj()));
     }
 
     void open() override {}
@@ -85,6 +99,7 @@ private:
     const bool _neededMeta;
     const bool _neededVar;
     const bool _neededWholeDoc;
+    const boost::optional<BSONObj> _neededFields;
     bool _emitted = false;
 };
 
@@ -96,7 +111,13 @@ public:
           _var(args["var"].str()),
           _neededMeta(args["neededMeta"].booleanSafe()),
           _neededVar(args["neededVar"].booleanSafe()),
-          _neededWholeDoc(args["neededWholeDoc"].booleanSafe()) {}
+          _neededWholeDoc(args["neededWholeDoc"].booleanSafe()) {
+        if (auto neededFieldsElem = args["neededFields"]) {
+            if (!neededFieldsElem.isNull()) {
+                _neededFields = neededFieldsElem.Obj().getOwned();
+            }
+        }
+    }
 
     BSONObj serialize() const override {
         BSONObjBuilder spec;
@@ -107,6 +128,11 @@ public:
         spec.appendBool("neededMeta", _neededMeta);
         spec.appendBool("neededVar", _neededVar);
         spec.appendBool("neededWholeDoc", _neededWholeDoc);
+        if (_neededFields) {
+            spec.appendArray("neededFields", *_neededFields);
+        } else {
+            spec.appendNull("neededFields");
+        }
         return BSON(_name << spec.obj());
     }
 
@@ -117,7 +143,7 @@ public:
 
     std::unique_ptr<sdk::ExecAggStageBase> compile() const override {
         return std::make_unique<TrackDepsExecStage>(
-            _name, _neededMeta, _neededVar, _neededWholeDoc);
+            _name, _neededMeta, _neededVar, _neededWholeDoc, _neededFields);
     }
 
     std::unique_ptr<sdk::LogicalAggStage> clone() const override {
@@ -142,6 +168,7 @@ public:
         if (!_var.empty())
             _neededVar = deps->needsVariable(_var);
         _neededWholeDoc = deps->needsWholeDocument();
+        _neededFields = deps->getNeededFields();
     }
 
 private:
@@ -150,6 +177,7 @@ private:
     bool _neededMeta;
     bool _neededVar;
     bool _neededWholeDoc;
+    boost::optional<BSONObj> _neededFields;
 };
 
 class TrackDepsAstNode : public sdk::TestAstNode<TrackDepsLogicalStage> {

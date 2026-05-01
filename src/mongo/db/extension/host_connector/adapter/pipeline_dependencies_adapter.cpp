@@ -29,7 +29,9 @@
 
 #include "mongo/db/extension/host_connector/adapter/pipeline_dependencies_adapter.h"
 
+#include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/exec/document_value/document_metadata_fields.h"
+#include "mongo/db/extension/shared/byte_buf.h"
 #include "mongo/db/extension/shared/byte_buf_utils.h"
 #include "mongo/db/extension/shared/extension_status.h"
 
@@ -62,6 +64,22 @@ namespace mongo::extension::host_connector {
     const ::MongoExtensionPipelineDependencies* deps, bool* out) noexcept {
     return wrapCXXAndConvertExceptionToStatus([&]() {
         *out = static_cast<const PipelineDependenciesAdapter*>(deps)->getImpl().needWholeDocument;
+    });
+}
+
+::MongoExtensionStatus* PipelineDependenciesAdapter::_hostGetNeededFields(
+    const ::MongoExtensionPipelineDependencies* deps, ::MongoExtensionByteBuf** result) noexcept {
+    return wrapCXXAndConvertExceptionToStatus([&]() {
+        const auto& impl = static_cast<const PipelineDependenciesAdapter*>(deps)->getImpl();
+        if (impl.needWholeDocument) {
+            *result = nullptr;
+            return;
+        }
+        BSONArrayBuilder builder;
+        for (const auto& field : impl.fields) {
+            builder.append(field);
+        }
+        *result = new ByteBuf(builder.arr());
     });
 }
 

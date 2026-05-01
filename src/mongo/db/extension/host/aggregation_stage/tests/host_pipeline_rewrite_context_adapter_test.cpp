@@ -284,5 +284,37 @@ TEST(PipelineDependenciesAdapterTest, NeedsMetadataReturnsFalseForUnsetMetadataT
     ASSERT_FALSE(PipelineDependenciesHandle(&adapter)->needsMetadata("searchScore"));
 }
 
+TEST(PipelineDependenciesAdapterTest, GetNeededFieldsReturnsNullWhenNeedsWholeDocument) {
+    DepsTracker deps;
+    deps.needWholeDocument = true;
+    deps.fields.insert("a");
+    deps.fields.insert("b");
+    auto adapter = host_connector::PipelineDependenciesAdapter(std::move(deps));
+    auto result = PipelineDependenciesHandle(&adapter)->getNeededFields();
+    ASSERT_FALSE(result.has_value());
+}
+
+TEST(PipelineDependenciesAdapterTest, GetNeededFieldsReturnsEmptyArrayWhenNoFieldsNeeded) {
+    DepsTracker deps;
+    deps.needWholeDocument = false;
+    auto adapter = host_connector::PipelineDependenciesAdapter(std::move(deps));
+    auto result = PipelineDependenciesHandle(&adapter)->getNeededFields();
+    ASSERT_TRUE(result.has_value());
+    ASSERT_BSONOBJ_EQ(*result, BSONArray());
+}
+
+TEST(PipelineDependenciesAdapterTest, GetNeededFieldsReturnsFieldPaths) {
+    DepsTracker deps;
+    deps.needWholeDocument = false;
+    deps.fields.insert("x");
+    deps.fields.insert("a");
+    deps.fields.insert("a.b");
+    auto adapter = host_connector::PipelineDependenciesAdapter(std::move(deps));
+    auto result = PipelineDependenciesHandle(&adapter)->getNeededFields();
+    ASSERT_TRUE(result.has_value());
+    ASSERT_BSONOBJ_EQ(*result, BSON_ARRAY("a" << "a.b" << "x"));
+}
+
+
 }  // namespace
 }  // namespace mongo::extension

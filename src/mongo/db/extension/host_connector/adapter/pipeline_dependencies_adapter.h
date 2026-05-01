@@ -81,11 +81,15 @@ private:
         bool* out) noexcept;
     static ::MongoExtensionStatus* _hostNeedsWholeDocument(
         const ::MongoExtensionPipelineDependencies* deps, bool* out) noexcept;
+    static ::MongoExtensionStatus* _hostGetNeededFields(
+        const ::MongoExtensionPipelineDependencies* deps,
+        ::MongoExtensionByteBuf** result) noexcept;
 
     static constexpr ::MongoExtensionPipelineDependenciesVTable VTABLE = {
         .needs_metadata = &_hostNeedsMetadata,
         .needs_variable = &_hostNeedsVariable,
         .needs_whole_document = &_hostNeedsWholeDocument,
+        .get_needed_fields = &_hostGetNeededFields,
     };
 
     const DepsTracker _deps;

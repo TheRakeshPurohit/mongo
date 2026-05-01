@@ -1148,6 +1148,15 @@ typedef struct MongoExtensionPipelineDependenciesVTable {
      */
     MongoExtensionStatus* (*needs_whole_document)(const MongoExtensionPipelineDependencies* deps,
                                                   bool* out);
+
+    /**
+     * Populates 'result' with a BSON array of dotted field-path strings representing the specific
+     * document fields referenced by the downstream pipeline. If needs_whole_document is true,
+     * 'result' is set to null because enumerating individual fields is redundant when the full
+     * document is already required. Ownership of the result buffer is transferred to the caller.
+     */
+    MongoExtensionStatus* (*get_needed_fields)(const MongoExtensionPipelineDependencies* deps,
+                                               MongoExtensionByteBuf** result);
 } MongoExtensionPipelineDependenciesVTable;
 
 ////////////////////////////////////////////////////////////////
