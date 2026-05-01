@@ -94,12 +94,10 @@ void fetchSplitPoints(OperationContext* opCtx,
         aggRequest.setWriteConcern(WriteConcernOptions());
         aggRequest.setUnwrappedReadPref(ReadPreferenceSetting::get(opCtx).toContainingBSON());
 
-        // TODO(SERVER-113504): Consider using kIdempotent since onRetry allows read only
-        // aggregation processes to be restarted.
         uassertStatusOK(shard->runAggregation(
             opCtx,
             aggRequest,
-            Shard::RetryPolicy::kStrictlyNotIdempotent,
+            Shard::RetryPolicy::kIdempotent,
             [&](const std::vector<BSONObj>& docs, const boost::optional<BSONObj>&) -> bool {
                 for (const auto& doc : docs) {
                     callbackFn(doc);

@@ -51,6 +51,7 @@
 #include "mongo/db/pipeline/expression_context_builder.h"
 #include "mongo/db/pipeline/pipeline.h"
 #include "mongo/db/pipeline/process_interface/mongo_process_interface.h"
+#include "mongo/db/query/write_ops/delete.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/oplog_entry.h"
 #include "mongo/db/repl/oplog_entry_gen.h"
@@ -640,13 +641,20 @@ bool ReshardingOplogFetcher::consume(
     auto tickSource = opCtxRaii->getServiceContext()->getTickSource();
     Timer batchTimer(tickSource);
 
+    const auto originalStartAt = [&] {
+        std::lock_guard lk(_mutex);
+        return _startAt;
+    }();
+    const auto originalNumOplogEntriesCopied = _numOplogEntriesCopied;
+    const auto originalTotalNumBatchesProcessed = _totalNumBatchesProcessed;
+    const auto originalLastUpdatedProgressMarkAt = _lastUpdatedProgressMarkAt;
+
     // Note that the oplog entries are *not* being copied with a tailable cursor.
     // Shard::runAggregation() will instead return upon hitting the end of the donor's oplog.
-    // TODO(SERVER-113504): Consider using kIdempotent and properly implement onRetry.
     uassertStatusOK(shard->runAggregation(
         opCtxRaii.get(),
         aggRequest,
-        Shard::RetryPolicy::kNoRetry,
+        Shard::RetryPolicy::kIdempotent,
         [this, &currentNumBatchesProcessed, &moreToCome, &opCtxRaii, &batchTimer, factory](
             const std::vector<BSONObj>& aggregateBatch,
             const boost::optional<BSONObj>& postBatchResumeToken) {
@@ -785,8 +793,68 @@ bool ReshardingOplogFetcher::consume(
 
             return true;
         },
-        [](const Status&) {
-            // Do nothing on retry since we don't allow retries.
+        [this,
+         &currentNumBatchesProcessed,
+         &moreToCome,
+         &opCtxRaii,
+         &originalStartAt,
+         &originalNumOplogEntriesCopied,
+         &originalTotalNumBatchesProcessed,
+         &originalLastUpdatedProgressMarkAt,
+         factory](const Status&) {
+            auto opCtx = opCtxRaii.get();
+
+            // Acquire all collections before any writes. config.* is replicated, so deleteObjects
+            // below will write to the local oplog and set assertOnLockAttempt=true on the opCtx.
+            // Any lock acquisition after that point will fatal.
+            auto oplogBufferColl =
+                acquireCollection(opCtx,
+                                  CollectionAcquisitionRequest(
+                                      _oplogBufferNss,
+                                      PlacementConcern{boost::none, ShardVersion::UNTRACKED()},
+                                      repl::ReadConcernArgs::get(opCtx),
+                                      AcquisitionPrerequisites::kWrite),
+                                  MODE_IX);
+            boost::optional<CollectionAcquisition> oplogFetcherProgressColl;
+            if (_storeProgress) {
+                oplogFetcherProgressColl =
+                    acquireCollection(opCtx,
+                                      CollectionAcquisitionRequest(
+                                          NamespaceString::kReshardingFetcherProgressNamespace,
+                                          PlacementConcern{boost::none, ShardVersion::UNTRACKED()},
+                                          repl::ReadConcernArgs::get(opCtx),
+                                          AcquisitionPrerequisites::kWrite),
+                                      MODE_IX);
+            }
+
+            WriteUnitOfWork wuow(opCtx, WriteUnitOfWork::kGroupForTransaction);
+            // deleteObjects returns the number of deleted docs, which matches the progress doc
+            // increment exactly (including progress-mark noops counted by insertOplogBatch).
+            const long long numDeleted =
+                deleteObjects(opCtx,
+                              oplogBufferColl,
+                              BSON("_id" << BSON("$gt" << originalStartAt.toBSON())),
+                              false /* justOne */);
+
+            if (oplogFetcherProgressColl && numDeleted > 0) {
+                auto filter = BSON(ReshardingOplogApplierProgress::kOplogSourceIdFieldName
+                                   << (ReshardingSourceId{_reshardingUUID, _donorShard}).toBSON());
+                auto updateMod =
+                    BSON("$inc" << BSON(ReshardingOplogFetcherProgress::kNumEntriesFetchedFieldName
+                                        << -numDeleted));
+                Helpers::upsert(opCtx, *oplogFetcherProgressColl, filter, updateMod, false);
+            }
+            wuow.commit();
+
+            {
+                std::lock_guard lk(_mutex);
+                _startAt = originalStartAt;
+            }
+            _numOplogEntriesCopied = originalNumOplogEntriesCopied;
+            _totalNumBatchesProcessed = originalTotalNumBatchesProcessed;
+            _lastUpdatedProgressMarkAt = originalLastUpdatedProgressMarkAt;
+            currentNumBatchesProcessed = 0;
+            moreToCome = true;
         }));
 
     return moreToCome;

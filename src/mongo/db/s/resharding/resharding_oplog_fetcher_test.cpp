@@ -88,6 +88,7 @@
 #include "mongo/executor/thread_pool_task_executor.h"
 #include "mongo/idl/server_parameter_test_controller.h"
 #include "mongo/logv2/log.h"
+#include "mongo/unittest/barrier.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/assert_util.h"
@@ -1394,7 +1395,14 @@ TEST_F(ReshardingOplogFetcherTest, RetriesOnRemoteInterruptionError) {
 
     onCommand([&](const executor::RemoteCommandRequest& request) -> StatusWith<BSONObj> {
         // Simulate the remote donor shard stepping down or transitioning into rollback.
+        // The aggregation should be retried.
         return {ErrorCodes::InterruptedDueToReplStateChange, "operation was interrupted"};
+    });
+
+    onCommand([&](const executor::RemoteCommandRequest& request) -> StatusWith<BSONObj> {
+        // Inject network timeout error.
+        // This kills the aggregation.
+        return {ErrorCodes::NetworkInterfaceExceededTimeLimit, "exceeded network time limit"};
     });
 
     auto moreToCome = fetcherJob.timed_get(Seconds(5));
@@ -2590,6 +2598,135 @@ TEST_F(ReshardingOplogFetcherTest, UpdateAverageTimeToFetchMultipleCursors) {
     ASSERT_OK(fetcherFuture.getNoThrow());
     executor->shutdown();
     executor->join();
+}
+
+TEST_F(ReshardingOplogFetcherTest, RollsBackPartialBatchOnRetryableError) {
+    for (bool storeProgress : {false, true}) {
+        LOGV2(10635006, "Running case", "storeProgress"_attr = storeProgress);
+
+        const NamespaceString outputCollectionNss = NamespaceString::createNamespaceString_forTest(
+            "dbtests.outputCollection" + std::to_string(storeProgress));
+        const NamespaceString dataCollectionNss = NamespaceString::createNamespaceString_forTest(
+            "dbtests.runFetchIteration" + std::to_string(storeProgress));
+
+        // 3 inserts + 1 final noop sentinel = 4 total entries
+        setupBasic(outputCollectionNss, dataCollectionNss, _destinationShard, 3);
+        const int expectedTotal = 4;
+
+        const auto collectionUUID = [&] {
+            AutoGetCollection dataColl(_opCtx, dataCollectionNss, LockMode::MODE_IX);
+            return dataColl->uuid();
+        }();
+
+        ReshardingOplogFetcher fetcher(makeFetcherEnv(),
+                                       _reshardingUUID,
+                                       collectionUUID,
+                                       {_fetchTimestamp, _fetchTimestamp},
+                                       _donorShard,
+                                       _destinationShard,
+                                       outputCollectionNss,
+                                       storeProgress);
+
+        const auto staringNumOplogEntriesCopied = fetcher.getNumOplogEntriesCopied();
+        const auto startingLastSeenTimestamp = fetcher.getLastSeenTimestamp();
+
+        auto fetcherJob = launchAsync([&, this] {
+            ThreadClient tc("RetryRollbackRunner", _svcCtx->getService(), Client::noSession());
+            fetcher.useReadConcernForTest(false);
+            // Batch size 2 so the first aggregate returns 2 entries with a live cursor,
+            // allowing us to inject a network error on the subsequent getMore.
+            fetcher.setInitialBatchSizeForTest(2);
+            auto factory = makeCancelableOpCtx();
+            // Mirror the real coordinator: call iterate() until moreToCome=false. The first call
+            // fails mid-batch (getMore error triggers the retry/rollback callback), and subsequent
+            // calls pick up from _startAt and complete fetching.
+            bool moreToCome = true;
+            while (moreToCome) {
+                moreToCome = fetcher.iterate(&cc(), factory);
+            }
+        });
+
+        struct SyncAndHang {
+        public:
+            void waitForSync() {
+                syncPoint.countDownAndWait();
+            }
+
+            void hang() {
+                pf.future.get();
+            }
+
+            void cont() {
+                pf.promise.emplaceValue();
+            }
+
+        private:
+            unittest::Barrier syncPoint{2};
+            PromiseAndFuture<void> pf;
+        };
+
+        size_t callbackHit{0};
+        auto passthrough = [&](boost::optional<std::reference_wrapper<SyncAndHang>> sync =
+                                   boost::none) {
+            onCommand([&](const auto& request) {
+                callbackHit++;
+                if (sync) {
+                    sync->get().waitForSync();
+                    sync->get().hang();
+                }
+                DBDirectClient client(cc().getOperationContext());
+                BSONObj result;
+                client.runCommand(request.dbname, request.cmdObj, result);
+                return result;
+            });
+        };
+        auto fail = [&](boost::optional<std::reference_wrapper<SyncAndHang>> sync = boost::none) {
+            onCommand([&](const auto&) {
+                callbackHit++;
+                if (sync) {
+                    sync->get().waitForSync();
+                    sync->get().hang();
+                }
+                return Status{ErrorCodes::HostUnreachable, "injected"};
+            });
+        };
+
+        SyncAndHang syncPointBeforeFail;
+        SyncAndHang syncPointAfterFail;
+
+        stdx::thread beforeFail([&] {
+            syncPointBeforeFail.waitForSync();
+            ASSERT_GT(fetcher.getNumOplogEntriesCopied(), staringNumOplogEntriesCopied);
+            ASSERT_GT(fetcher.getLastSeenTimestamp(), startingLastSeenTimestamp);
+            syncPointBeforeFail.cont();
+        });
+
+        stdx::thread afterFail([&] {
+            syncPointAfterFail.waitForSync();
+            ASSERT_EQ(fetcher.getNumOplogEntriesCopied(), staringNumOplogEntriesCopied);
+            ASSERT_EQ(fetcher.getLastSeenTimestamp(), startingLastSeenTimestamp);
+            syncPointAfterFail.cont();
+        });
+
+        passthrough();
+        fail(std::ref(syncPointBeforeFail));
+        passthrough(std::ref(syncPointAfterFail));
+        passthrough();
+
+        fetcherJob.timed_get(Seconds(5));
+        beforeFail.join();
+        afterFail.join();
+
+        // Whether the rollback callback succeeds (deletes the 2 partial entries and resets
+        // _startAt) or fails with WriteConflict (leaving _startAt at the last inserted entry), the
+        // final output has exactly expectedTotal entries with no duplicates.
+        ASSERT_EQ(expectedTotal, itcount(outputCollectionNss));
+        ASSERT_EQ(storeProgress ? expectedTotal : 0, persistedFetchedCount(_opCtx))
+            << " Verify persisted progress metrics";
+        ASSERT_EQ(callbackHit, 4);
+
+        resetResharding();
+    }
 }
 
 class ReshardingOplogFetcherProgressMarkOplogTest : public ReshardingOplogFetcherTest {
