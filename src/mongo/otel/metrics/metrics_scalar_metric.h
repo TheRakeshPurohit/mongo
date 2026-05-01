@@ -129,6 +129,7 @@ public:
 #endif  // MONGO_CONFIG_OTEL
 
     AttributesAndValues<T> values() const override;
+    T valueForLegacyUse() const override;
     BSONObj serializeToBson(const std::string& key) const override;
 
     void setReportingPolicy(const Attributes& attributes, ReportingPolicy reportingPolicy) override;
@@ -275,5 +276,14 @@ AttributesAndValues<T> ScalarMetricImpl<T, AttributeTs...>::values() const {
             {.attributes = AttributesKeyValueIterable(std::move(attrList)), .value = value});
     }
     return attributesAndValues;
+}
+
+template <typename T, typename... AttributeTs>
+T ScalarMetricImpl<T, AttributeTs...>::valueForLegacyUse() const {
+    if constexpr (sizeof...(AttributeTs) == 0) {
+        return _metrics.begin()->second->value.loadRelaxed();
+    } else {
+        MONGO_UNIMPLEMENTED_TASSERT(12398201);
+    }
 }
 }  // namespace mongo::otel::metrics

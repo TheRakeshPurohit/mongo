@@ -230,3 +230,19 @@ export function otelFileExportParams(testName) {
         },
     };
 }
+
+/**
+ * Waits until the named metric in the most-recently-exported file is >= minValue, reading only
+ * files written after afterDate.
+ */
+export function waitForMetric({metricsDir, metricName, minValue, afterDate}) {
+    assert.soon(
+        () => {
+            const metrics = getLatestMetrics(metricsDir);
+            return metrics && metrics.time > afterDate.getTime() && (metrics[metricName]?.value ?? 0) >= minValue;
+        },
+        `Expected ${metricName} >= ${minValue} in ${metricsDir}`,
+        30000,
+        300,
+    );
+}

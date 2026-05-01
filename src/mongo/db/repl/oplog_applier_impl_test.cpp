@@ -184,9 +184,9 @@ TEST_F(OplogApplierImplTestDisableSteadyStateConstraints,
         NamespaceString::createNamespaceString_forTest(boost::none, "test.t");
     NamespaceString otherNss = NamespaceString::createNamespaceString_forTest("test.othername");
     auto op = makeOplogEntry(OpTypeEnum::kDelete, otherNss, {});
-    int prevDeleteFromMissing = replOpCounters().getDeleteFromMissingNamespace()->load();
+    int prevDeleteFromMissing = replOpCounters().deletesFromMissingNamespace->value();
     _testApplyOplogEntryOrGroupedInsertsCrudOperation(ErrorCodes::OK, op, nss, false);
-    auto postDeleteFromMissing = replOpCounters().getDeleteFromMissingNamespace()->load();
+    auto postDeleteFromMissing = replOpCounters().deletesFromMissingNamespace->value();
     ASSERT_EQ(1, postDeleteFromMissing - prevDeleteFromMissing);
 
     ASSERT_EQ(postDeleteFromMissing,
@@ -225,9 +225,9 @@ TEST_F(OplogApplierImplTestDisableSteadyStateConstraints,
     NamespaceString otherNss =
         NamespaceString::createNamespaceString_forTest(nss.getSisterNS("othername"));
     auto op = makeOplogEntry(OpTypeEnum::kDelete, otherNss, kUuid);
-    int prevDeleteFromMissing = replOpCounters().getDeleteFromMissingNamespace()->load();
+    int prevDeleteFromMissing = replOpCounters().deletesFromMissingNamespace->value();
     _testApplyOplogEntryOrGroupedInsertsCrudOperation(ErrorCodes::OK, op, nss, false);
-    auto postDeleteFromMissing = replOpCounters().getDeleteFromMissingNamespace()->load();
+    auto postDeleteFromMissing = replOpCounters().deletesFromMissingNamespace->value();
     ASSERT_EQ(1, postDeleteFromMissing - prevDeleteFromMissing);
 
     ASSERT_EQ(postDeleteFromMissing,
@@ -271,10 +271,10 @@ TEST_F(OplogApplierImplTestDisableSteadyStateConstraints,
     // which in the case of this test just ignores such errors. This tests mostly that we don't
     // implicitly create the collection.
     auto op = makeOplogEntry(OpTypeEnum::kDelete, nss, {});
-    int prevDeleteFromMissing = replOpCounters().getDeleteFromMissingNamespace()->load();
+    int prevDeleteFromMissing = replOpCounters().deletesFromMissingNamespace->value();
     _testApplyOplogEntryOrGroupedInsertsCrudOperation(ErrorCodes::OK, op, nss, false);
     ASSERT_FALSE(collectionExists(_opCtx.get(), nss));
-    auto postDeleteFromMissing = replOpCounters().getDeleteFromMissingNamespace()->load();
+    auto postDeleteFromMissing = replOpCounters().deletesFromMissingNamespace->value();
     ASSERT_EQ(1, postDeleteFromMissing - prevDeleteFromMissing);
 
     ASSERT_EQ(postDeleteFromMissing,
@@ -309,9 +309,9 @@ TEST_F(OplogApplierImplTestDisableSteadyStateConstraints,
     const NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
     repl::createCollection(_opCtx.get(), nss, {});
     auto op = makeOplogEntry(OpTypeEnum::kDelete, nss, {});
-    int prevDeleteWasEmpty = replOpCounters().getDeleteWasEmpty()->load();
+    int prevDeleteWasEmpty = replOpCounters().deletesWasEmpty->value();
     _testApplyOplogEntryOrGroupedInsertsCrudOperation(ErrorCodes::OK, op, nss, false);
-    auto postDeleteWasEmpty = replOpCounters().getDeleteWasEmpty()->load();
+    auto postDeleteWasEmpty = replOpCounters().deletesWasEmpty->value();
     ASSERT_EQ(1, postDeleteWasEmpty - prevDeleteWasEmpty);
 
     ASSERT_EQ(postDeleteWasEmpty,
@@ -350,9 +350,9 @@ TEST_F(OplogApplierImplTestDisableSteadyStateConstraints,
     auto uuid = createCollectionWithUuid(_opCtx.get(), nss);
     ASSERT_OK(getStorageInterface()->insertDocument(_opCtx.get(), nss, {BSON("_id" << 0)}, 0));
     auto op = makeOplogEntry(OpTypeEnum::kInsert, nss, uuid);
-    int prevInsertOnExistingDoc = replOpCounters().getInsertOnExistingDoc()->load();
+    int prevInsertOnExistingDoc = replOpCounters().insertsOnExistingDoc->value();
     _testApplyOplogEntryOrGroupedInsertsCrudOperation(ErrorCodes::OK, op, nss, false);
-    auto postInsertOnExistingDoc = replOpCounters().getInsertOnExistingDoc()->load();
+    auto postInsertOnExistingDoc = replOpCounters().insertsOnExistingDoc->value();
     ASSERT_EQ(1, postInsertOnExistingDoc - prevInsertOnExistingDoc);
 
     ASSERT_EQ(postInsertOnExistingDoc,
@@ -382,9 +382,9 @@ TEST_F(OplogApplierImplTestDisableSteadyStateConstraints,
                              update_oplog_entry::makeDeltaOplogEntry(
                                  BSON(doc_diff::kUpdateSectionFieldName << fromjson("{a: 1}"))),
                              BSON("_id" << 0));
-    int prevUpdateOnMissingDoc = replOpCounters().getUpdateOnMissingDoc()->load();
+    int prevUpdateOnMissingDoc = replOpCounters().updatesOnMissingDoc->value();
     _testApplyOplogEntryOrGroupedInsertsCrudOperation(ErrorCodes::OK, op, nss, true);
-    auto postUpdateOnMissingDoc = replOpCounters().getUpdateOnMissingDoc()->load();
+    auto postUpdateOnMissingDoc = replOpCounters().updatesOnMissingDoc->value();
     ASSERT_EQ(1, postUpdateOnMissingDoc - prevUpdateOnMissingDoc);
 
     ASSERT_EQ(postUpdateOnMissingDoc,
@@ -430,9 +430,9 @@ TEST_F(OplogApplierImplTestDisableSteadyStateConstraints,
     NamespaceString otherNss =
         NamespaceString::createNamespaceString_forTest(nss.getSisterNS("othername"));
     auto op = makeOplogEntry(OpTypeEnum::kDelete, otherNss, options.uuid);
-    int prevDeleteWasEmpty = replOpCounters().getDeleteWasEmpty()->load();
+    int prevDeleteWasEmpty = replOpCounters().deletesWasEmpty->value();
     _testApplyOplogEntryOrGroupedInsertsCrudOperation(ErrorCodes::OK, op, nss, false);
-    auto postDeleteWasEmpty = replOpCounters().getDeleteWasEmpty()->load();
+    auto postDeleteWasEmpty = replOpCounters().deletesWasEmpty->value();
     ASSERT_EQ(1, postDeleteWasEmpty - prevDeleteWasEmpty);
 
     ASSERT_EQ(postDeleteWasEmpty,
@@ -2733,14 +2733,14 @@ TEST_F(MultiOplogEntryOplogApplierImplTest, MultiApplyTwoTransactionsOneBatch) {
     // Note the insert counter so we can check it later.  It is necessary to use globalOpCounters()
     // as inserts are idempotent so we will not detect duplicate inserts just by checking inserts in
     // the opObserver.
-    int insertsBefore = replOpCounters().getInsert()->load();
+    int insertsBefore = replOpCounters().inserts->value();
     // Insert all the oplog entries in one batch.  All inserts should be executed, in order, exactly
     // once.
     ASSERT_OK(oplogApplier.applyOplogBatch(
         _opCtx.get(),
         {insertOps1[0], insertOps1[1], commitOp1, insertOps2[0], insertOps2[1], commitOp2}));
     ASSERT_EQ(6U, getOplogSize());
-    ASSERT_EQ(4, replOpCounters().getInsert()->load() - insertsBefore);
+    ASSERT_EQ(4, replOpCounters().inserts->value() - insertsBefore);
     ASSERT_EQ(4U, _insertedDocs[_nss1].size());
     checkTxnTable(_lsid,
                   txnNum2,
@@ -5698,10 +5698,10 @@ TEST_F(IdempotencyTestDisableSteadyStateConstraints, AcceptableErrorsRecordedInS
         nextOpTime(), _nss, collModCmd, boost::none /* object2 */, UUID::gen());
 
     // Ensure that NamespaceNotFound is "acceptable" but counted.
-    int prevAcceptableError = replOpCounters().getAcceptableErrorInCommand()->load();
+    int prevAcceptableError = replOpCounters().acceptableErrorsInCommand->value();
     ASSERT_OK(runOpSteadyState(collModOp));
 
-    auto postAcceptableError = replOpCounters().getAcceptableErrorInCommand()->load();
+    auto postAcceptableError = replOpCounters().acceptableErrorsInCommand->value();
     ASSERT_EQ(1, postAcceptableError - prevAcceptableError);
 
     ASSERT_EQ(postAcceptableError,

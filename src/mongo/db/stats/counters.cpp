@@ -34,7 +34,6 @@
 #include "mongo/client/authenticate.h"
 #include "mongo/db/commands/server_status/server_status.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/util/static_immortal.h"
 
 #include <tuple>
 
@@ -44,43 +43,6 @@
 
 namespace mongo {
 
-BSONObj OpCounters::getObj() const {
-    BSONObjBuilder b;
-    b.append("insert", _insert->loadRelaxed());
-    b.append("query", _query->loadRelaxed());
-    b.append("update", _update->loadRelaxed());
-    b.append("delete", _delete->loadRelaxed());
-    b.append("getmore", _getmore->loadRelaxed());
-    b.append("command", _command->loadRelaxed());
-
-    auto queryDep = _queryDeprecated->loadRelaxed();
-    if (queryDep > 0) {
-        BSONObjBuilder d(b.subobjStart("deprecated"));
-        d.append("query", queryDep);
-    }
-
-    // Append counters for constraint relaxations, only if they exist.
-    auto insertOnExistingDoc = _insertOnExistingDoc->loadRelaxed();
-    auto updateOnMissingDoc = _updateOnMissingDoc->loadRelaxed();
-    auto deleteWasEmpty = _deleteWasEmpty->loadRelaxed();
-    auto deleteFromMissingNamespace = _deleteFromMissingNamespace->loadRelaxed();
-    auto acceptableErrorInCommand = _acceptableErrorInCommand->loadRelaxed();
-    auto recordIdsReplicatedDocIdMismatch = _recordIdsReplicatedDocIdMismatch->loadRelaxed();
-    auto totalRelaxed = insertOnExistingDoc + updateOnMissingDoc + deleteWasEmpty +
-        deleteFromMissingNamespace + acceptableErrorInCommand + recordIdsReplicatedDocIdMismatch;
-
-    if (totalRelaxed > 0) {
-        BSONObjBuilder d(b.subobjStart("constraintsRelaxed"));
-        d.append("insertOnExistingDoc", insertOnExistingDoc);
-        d.append("updateOnMissingDoc", updateOnMissingDoc);
-        d.append("deleteWasEmpty", deleteWasEmpty);
-        d.append("deleteFromMissingNamespace", deleteFromMissingNamespace);
-        d.append("acceptableErrorInCommand", acceptableErrorInCommand);
-        d.append("recordIdsReplicatedDocIdMismatch", recordIdsReplicatedDocIdMismatch);
-    }
-
-    return b.obj();
-}
 
 void NetworkCounter::hitPhysicalIn(ConnectionType connectionType, long long bytes) {
     static const int64_t MAX = 1ULL << 60;
@@ -360,19 +322,6 @@ void AuthCounter::append(BSONObjBuilder* b) {
     b->append("totalIngressAuthenticationTimeMicros", totalIngressAuthenticationTimeMicros);
     const auto totalEgressAuthenticationTimeMicros = _egressAuthenticationCumulativeMicros.load();
     b->append("totalEgressAuthenticationTimeMicros", totalEgressAuthenticationTimeMicros);
-}
-
-namespace {
-OpCounters opCounterInstance;
-OpCounters replOpCounterInstance;
-}  // namespace
-
-OpCounters& globalOpCounters() {
-    return opCounterInstance;
-}
-
-OpCounters& replOpCounters() {
-    return replOpCounterInstance;
 }
 
 

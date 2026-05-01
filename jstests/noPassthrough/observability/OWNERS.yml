@@ -3,3 +3,6 @@ filters:
   - "*":
     approvers:
       - 10gen/server-networking-and-observability
+  - "otel_opcounters*":
+    approvers:
+      - 10gen/query-integration-observability

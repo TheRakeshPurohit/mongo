@@ -51,7 +51,7 @@ namespace mongo {
 
 // Forward declaration: QueryStats reads operation counts from an OpCounters instance rather than
 // calling globalOpCounters() directly, so that tests can inject a private OpCounters instance.
-class OpCounters;
+struct OpCounters;
 
 namespace analyze_shard_key {
 

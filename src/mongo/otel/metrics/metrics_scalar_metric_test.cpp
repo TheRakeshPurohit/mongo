@@ -260,6 +260,18 @@ TEST(DoubleScalarMetricImplTest, AddsFractionalValues) {
                                                           DoubleEq(10.5))));
 }
 
+TYPED_TEST(ScalarMetricImplTest, ValueViaBasePointer) {
+    auto counter = std::make_unique<ScalarMetricImpl<TypeParam>>();
+    Counter<TypeParam>* base = counter.get();
+    EXPECT_EQ(base->valueForLegacyUse(), 0);
+    base->add(7);
+    EXPECT_EQ(base->valueForLegacyUse(), 7);
+    base->add(5);
+    EXPECT_EQ(base->valueForLegacyUse(), 12);
+    EXPECT_EQ(base->valueForLegacyUse(), 12);
+}
+
+
 ///////////////////////////////////////////////////////////////////////////////
 // Gauge tests
 ///////////////////////////////////////////////////////////////////////////////

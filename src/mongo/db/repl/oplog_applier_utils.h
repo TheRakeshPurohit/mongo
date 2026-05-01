@@ -49,7 +49,7 @@
 namespace MONGO_MOD_PUB mongo {
 class CollatorInterface;
 
-class OpCounters;
+struct OpCounters;
 
 namespace repl {
 

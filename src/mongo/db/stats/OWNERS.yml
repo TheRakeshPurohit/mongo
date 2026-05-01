@@ -7,6 +7,9 @@ filters:
   - "counters*":
     approvers:
       - 10gen/query-execution
+  - "opcounters*":
+    approvers:
+      - 10gen/query-integration-observability
   - "top*":
     approvers:
       - 10gen/query-integration-observability

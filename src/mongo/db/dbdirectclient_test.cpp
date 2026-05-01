@@ -81,20 +81,20 @@ TEST_F(DBDirectClientTest, NoAuth) {
 }
 
 TEST_F(DBDirectClientTest, InsertSingleDocumentSuccessful) {
-    auto globalDeletesCountBefore = globalOpCounters().getDelete()->load();
-    auto globalInsertsCountBefore = globalOpCounters().getInsert()->load();
-    auto globalUpdatesCountBefore = globalOpCounters().getUpdate()->load();
-    auto globalCommandsCountBefore = globalOpCounters().getCommand()->load();
+    auto globalDeletesCountBefore = globalOpCounters().deletes->value();
+    auto globalInsertsCountBefore = globalOpCounters().inserts->value();
+    auto globalUpdatesCountBefore = globalOpCounters().updates->value();
+    auto globalCommandsCountBefore = globalOpCounters().commands->value();
     DBDirectClient client(_opCtx);
     write_ops::InsertCommandRequest insertOp(kNs);
     insertOp.setDocuments({BSON("_id" << 1)});
     auto insertReply = client.insert(insertOp);
     ASSERT_EQ(insertReply.getN(), 1);
     ASSERT_FALSE(insertReply.getWriteErrors());
-    auto globalCommandsCountAfter = globalOpCounters().getCommand()->load();
-    auto globalDeletesCountAfter = globalOpCounters().getDelete()->load();
-    auto globalInsertsCountAfter = globalOpCounters().getInsert()->load();
-    auto globalUpdatesCountAfter = globalOpCounters().getUpdate()->load();
+    auto globalCommandsCountAfter = globalOpCounters().commands->value();
+    auto globalDeletesCountAfter = globalOpCounters().deletes->value();
+    auto globalInsertsCountAfter = globalOpCounters().inserts->value();
+    auto globalUpdatesCountAfter = globalOpCounters().updates->value();
     ASSERT_EQ(1, globalInsertsCountAfter - globalInsertsCountBefore);
     ASSERT_EQ(0, globalDeletesCountAfter - globalDeletesCountBefore);
     ASSERT_EQ(0, globalCommandsCountAfter - globalCommandsCountBefore);
@@ -113,10 +113,10 @@ TEST_F(DBDirectClientTest, InsertDuplicateDocumentDoesNotThrow) {
 }
 
 TEST_F(DBDirectClientTest, UpdateSingleDocumentSuccessfully) {
-    auto globalDeletesCountBefore = globalOpCounters().getDelete()->load();
-    auto globalInsertsCountBefore = globalOpCounters().getInsert()->load();
-    auto globalUpdatesCountBefore = globalOpCounters().getUpdate()->load();
-    auto globalCommandsCountBefore = globalOpCounters().getCommand()->load();
+    auto globalDeletesCountBefore = globalOpCounters().deletes->value();
+    auto globalInsertsCountBefore = globalOpCounters().inserts->value();
+    auto globalUpdatesCountBefore = globalOpCounters().updates->value();
+    auto globalCommandsCountBefore = globalOpCounters().commands->value();
     DBDirectClient client(_opCtx);
     write_ops::UpdateCommandRequest updateOp(kNs);
     updateOp.setUpdates({[&] {
@@ -132,10 +132,10 @@ TEST_F(DBDirectClientTest, UpdateSingleDocumentSuccessfully) {
     // No documents there initially
     ASSERT_EQ(updateReply.getNModified(), 0);
     ASSERT_FALSE(updateReply.getWriteErrors());
-    auto globalCommandsCountAfter = globalOpCounters().getCommand()->load();
-    auto globalDeletesCountAfter = globalOpCounters().getDelete()->load();
-    auto globalInsertsCountAfter = globalOpCounters().getInsert()->load();
-    auto globalUpdatesCountAfter = globalOpCounters().getUpdate()->load();
+    auto globalCommandsCountAfter = globalOpCounters().commands->value();
+    auto globalDeletesCountAfter = globalOpCounters().deletes->value();
+    auto globalInsertsCountAfter = globalOpCounters().inserts->value();
+    auto globalUpdatesCountAfter = globalOpCounters().updates->value();
     ASSERT_EQ(0, globalInsertsCountAfter - globalInsertsCountBefore);
     ASSERT_EQ(0, globalDeletesCountAfter - globalDeletesCountBefore);
     ASSERT_EQ(0, globalCommandsCountAfter - globalCommandsCountBefore);
@@ -167,10 +167,10 @@ TEST_F(DBDirectClientTest, DeleteSingleDocumentSuccessful) {
     insertOp.setDocuments({BSON("_id" << 1)});
     auto insertReply = client.insert(insertOp);
 
-    auto globalDeletesCountBefore = globalOpCounters().getDelete()->load();
-    auto globalInsertsCountBefore = globalOpCounters().getInsert()->load();
-    auto globalUpdatesCountBefore = globalOpCounters().getUpdate()->load();
-    auto globalCommandsCountBefore = globalOpCounters().getCommand()->load();
+    auto globalDeletesCountBefore = globalOpCounters().deletes->value();
+    auto globalInsertsCountBefore = globalOpCounters().inserts->value();
+    auto globalUpdatesCountBefore = globalOpCounters().updates->value();
+    auto globalCommandsCountBefore = globalOpCounters().commands->value();
     // Delete document
     write_ops::DeleteCommandRequest deleteOp(kNs);
     deleteOp.setDeletes({[&] {
@@ -182,10 +182,10 @@ TEST_F(DBDirectClientTest, DeleteSingleDocumentSuccessful) {
     auto deleteReply = client.remove(deleteOp);
     ASSERT_EQ(deleteReply.getN(), 1);
     ASSERT_FALSE(deleteReply.getWriteErrors());
-    auto globalCommandsCountAfter = globalOpCounters().getCommand()->load();
-    auto globalDeletesCountAfter = globalOpCounters().getDelete()->load();
-    auto globalInsertsCountAfter = globalOpCounters().getInsert()->load();
-    auto globalUpdatesCountAfter = globalOpCounters().getUpdate()->load();
+    auto globalCommandsCountAfter = globalOpCounters().commands->value();
+    auto globalDeletesCountAfter = globalOpCounters().deletes->value();
+    auto globalInsertsCountAfter = globalOpCounters().inserts->value();
+    auto globalUpdatesCountAfter = globalOpCounters().updates->value();
     ASSERT_EQ(0, globalInsertsCountAfter - globalInsertsCountBefore);
     ASSERT_EQ(1, globalDeletesCountAfter - globalDeletesCountBefore);
     ASSERT_EQ(0, globalCommandsCountAfter - globalCommandsCountBefore);

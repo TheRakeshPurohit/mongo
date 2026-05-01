@@ -809,7 +809,7 @@ TEST_F(CatalogTestFixture, CappedDeleteRecord) {
     }
 
     ASSERT_EQUALS(1, coll->numRecords(operationContext()));
-    auto globalDeletesInitial = globalOpCounters().getDelete()->load();
+    auto globalDeletesInitial = globalOpCounters().deletes->value();
 
     // Inserting the second document will remove the first one.
     {
@@ -817,7 +817,7 @@ TEST_F(CatalogTestFixture, CappedDeleteRecord) {
         ASSERT_OK(Helpers::insert(operationContext(), coll, secondDoc));
         wuow.commit();
     }
-    auto globalDeletesAfterInsert = globalOpCounters().getDelete()->load();
+    auto globalDeletesAfterInsert = globalOpCounters().deletes->value();
     ASSERT_EQUALS(globalDeletesAfterInsert, globalDeletesInitial + 1);
 
     ASSERT_EQUALS(1, opDebug.getAdditiveMetrics().keysDeleted.get_value_or(-1));

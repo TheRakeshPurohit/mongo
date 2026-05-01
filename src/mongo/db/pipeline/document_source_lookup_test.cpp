@@ -1465,7 +1465,7 @@ TEST_F(DocumentSourceLookUpTest, ShouldNotCacheIfCorrelatedStageIsAbsorbedIntoPl
 TEST_F(DocumentSourceLookUpTest, IncrementNestedAggregateOpCounterOnCreateButNotOnCopy) {
     auto testOpCounter = [&](const NamespaceString& nss, const int expectedIncrease) {
         auto resolvedNss = ResolvedNamespaceMap{{nss, {nss, std::vector<BSONObj>()}}};
-        auto countBeforeCreate = globalOpCounters().getNestedAggregate()->load();
+        auto countBeforeCreate = globalOpCounters().nestedAggregates->value();
 
         // Create a DocumentSourceLookUp and verify that the counter increases by the expected
         // amount.
@@ -1478,14 +1478,14 @@ TEST_F(DocumentSourceLookUpTest, IncrementNestedAggregateOpCounterOnCreateButNot
                 .firstElement(),
             originalExpCtx);
         auto originalLookup = static_cast<DocumentSourceLookUp*>(docSource.get());
-        auto countAfterCreate = globalOpCounters().getNestedAggregate()->load();
+        auto countAfterCreate = globalOpCounters().nestedAggregates->value();
         ASSERT_EQ(countAfterCreate - countBeforeCreate, expectedIncrease);
 
         // Copy the DocumentSourceLookUp and verify that the counter doesn't increase.
         auto newExpCtx = make_intrusive<ExpressionContextForTest>(getOpCtx(), nss);
         newExpCtx->setResolvedNamespaces(resolvedNss);
         DocumentSourceLookUp newLookup{*originalLookup, newExpCtx};
-        auto countAfterCopy = globalOpCounters().getNestedAggregate()->load();
+        auto countAfterCopy = globalOpCounters().nestedAggregates->value();
         ASSERT_EQ(countAfterCopy - countAfterCreate, 0);
     };
 

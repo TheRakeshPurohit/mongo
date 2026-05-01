@@ -34,6 +34,9 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/modules.h"
 
+#include <memory>
+#include <string>
+
 namespace mongo::otel::metrics {
 
 /**
@@ -58,6 +61,11 @@ public:
     virtual void setReportingPolicy(const Attributes& attributes,
                                     ReportingPolicy reportingPolicy) = 0;
 
+    /** Observation-side accessor for valueForLegacyUse. Only valid for no-attribute counters. */
+    virtual T valueForLegacyUse() const {
+        MONGO_UNIMPLEMENTED_TASSERT(12393200);
+    }
+
 protected:
     virtual void addNonNegative(T value, const Attributes& attributes) = 0;
 };
@@ -75,6 +83,15 @@ public:
 
     virtual void setReportingPolicy(const Attributes& attributes,
                                     ReportingPolicy reportingPolicy) = 0;
+
+    /**
+     * Returns the current counter value directly. This exists only to support legacy code paths
+     * (e.g., opcounters) that read counter values inline. OTel metrics are intended to be observed
+     * externally — do not use this for new metrics. This API may also get slower over time as we
+     * optimize for write throughput. In tests, prefer OtelMetricsCapturer and its
+     * readInt64Counter()/readDoubleCounter() helpers from metrics_test_util.h instead.
+     */
+    virtual T valueForLegacyUse() const = 0;
 
 protected:
     virtual void addNonNegative(T value, const std::tuple<>& attributes) = 0;
