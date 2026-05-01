@@ -424,6 +424,24 @@ TEST_F(WiredTigerUtilTest, GenerateVerboseConfiguration) {
         ASSERT_TRUE(config.find("checkpoint:2") != std::string::npos);
         ASSERT_TRUE(config.find("checkpoint:0") == std::string::npos);
     }
+    {
+        // Set the WiredTiger CheckpointCleanup LOGV2 component severity to the Log level and verify
+        // the generated config reflects it.
+        auto severityGuard = unittest::MinimumLoggedSeverityGuard{
+            logv2::LogComponent::kWiredTigerCheckpointCleanup, logv2::LogSeverity::Log()};
+        std::string config = WiredTigerUtil::generateWTVerboseConfiguration();
+        ASSERT_TRUE(config.find("checkpoint_cleanup:0") != std::string::npos);
+        ASSERT_TRUE(config.find("checkpoint_cleanup:1") == std::string::npos);
+    }
+    {
+        // Set the WiredTiger CheckpointCleanup LOGV2 component severity to Debug(1) and verify
+        // the generated config reflects it.
+        auto severityGuard = unittest::MinimumLoggedSeverityGuard{
+            logv2::LogComponent::kWiredTigerCheckpointCleanup, logv2::LogSeverity::Debug(1)};
+        std::string config = WiredTigerUtil::generateWTVerboseConfiguration();
+        ASSERT_TRUE(config.find("checkpoint_cleanup:1") != std::string::npos);
+        ASSERT_TRUE(config.find("checkpoint_cleanup:0") == std::string::npos);
+    }
 }
 
 TEST_F(WiredTigerUtilTest, RemoveEncryptionFromConfigString) {
