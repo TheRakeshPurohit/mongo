@@ -1193,6 +1193,9 @@ TEST_F(WiredTigerKVEngineTestWithPreciseCheckpoints,
     // This is necessary to satisfy the destructor of the recovery unit which expects to not be in a
     // unit of work when the storage engine is restarted. This does not affect the results of the
     // prepared transaction iterator since the transaction rollback is not in the checkpoint.
+    auto rollbackTimestamp = Timestamp(3, 0);
+    ru.setRollbackTimestamp(rollbackTimestamp);
+    ASSERT_EQ(ru.getRollbackTimestamp(), rollbackTimestamp);
     ru.abortUnitOfWork();
 
     // Release the opCtx to prevent memory issues when the storage engine is restarted.
@@ -1258,7 +1261,12 @@ TEST_F(WiredTigerKVEngineTestWithPreciseCheckpoints,
     // This is necessary to satisfy the destructor of the recovery units which expect to not be in
     // a unit of work when the storage engine is restarted. This does not affect the results of the
     // prepared transaction iterator since the transaction rollbacks are not in the checkpoint.
+    auto rollbackTimestamp = Timestamp(4, 0);
+    ru1.setRollbackTimestamp(rollbackTimestamp);
+    ASSERT_EQ(ru1.getRollbackTimestamp(), rollbackTimestamp);
     ru1.abortUnitOfWork();
+    ru2.setRollbackTimestamp(rollbackTimestamp);
+    ASSERT_EQ(ru2.getRollbackTimestamp(), rollbackTimestamp);
     ru2.abortUnitOfWork();
 
     // Release the clients and opCtxs to prevent memory issues when the storage engine is restarted.
@@ -1288,6 +1296,7 @@ TEST_F(WiredTigerKVEngineTestWithPreciseCheckpoints,
     ru3.setPrepareTimestamp(prepareTimestamp1);
     ru3.setPreparedId(firstId);
     ru3.getSession();  // Note this starts the storage transaction.
+    ru3.setRollbackTimestamp(rollbackTimestamp);
     ru3.abortUnitOfWork();
 
     ru3.beginUnitOfWork(false);
@@ -1381,6 +1390,7 @@ TEST_F(WiredTigerKVEngineTestWithPreciseCheckpoints,
         ru2.setPreparedId(*recoveredPreparedId);
         ru2.getSession();  // Note this starts the storage transaction.
 
+        ru2.setRollbackTimestamp(rollbackTimestamp);
         ru2.abortUnitOfWork();
         count++;
     }
@@ -1410,6 +1420,9 @@ DEATH_TEST_F(WiredTigerKVEngineTestWithPreciseCheckpointsDeathTest,
     // in a unit of work when the storage engine is restarted. This does not affect the results of
     // the prepared transaction iterator since the transaction rollback is not in the
     // checkpoint.
+    auto rollbackTimestamp = Timestamp(3, 0);
+    ru.setRollbackTimestamp(rollbackTimestamp);
+    ASSERT_EQ(ru.getRollbackTimestamp(), rollbackTimestamp);
     ru.abortUnitOfWork();
 
     // Release the opCtx to prevent memory issues when the storage engine is restarted.
