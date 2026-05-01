@@ -73,13 +73,13 @@ TEST(ReplicatedFastCountEligibleNsTest, NormalCollectionsEligible) {
     EXPECT_TRUE(isReplicatedFastCountEligible(normalNss));
 }
 
-TEST(ReplicatedFastCountEligibleNsTest, InternalLocalCollectionsEligible) {
+TEST(ReplicatedFastCountEligibleNsTest, InternalLocalCollectionsNotEligible) {
     const NamespaceString localNss =
         NamespaceString::createNamespaceString_forTest("local", "coll1");
     EXPECT_FALSE(isReplicatedFastCountEligible(localNss));
 }
 
-TEST(ReplicatedFastCountEligibleNsTest, InternalNonLocalCollectionNotEligible) {
+TEST(ReplicatedFastCountEligibleNsTest, InternalNonLocalCollectionsEligible) {
     const NamespaceString configNss =
         NamespaceString::createNamespaceString_forTest("config", "coll1");
     EXPECT_TRUE(isReplicatedFastCountEligible(configNss));
