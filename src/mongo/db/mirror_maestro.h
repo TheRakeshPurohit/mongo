@@ -108,7 +108,7 @@ StatusWith<std::vector<HostAndPort>> getCachedHostsForTargetedMirroring_forTest(
  * The function will update the list of hosts to target on config version changes, or if the repl
  * set tag used to target hosts is updated (tagChanged).
  */
-void updateCachedHostsForTargetedMirroring_forTest(ServiceContext* serviceContext, bool tagChanged);
+void recomputeCachedHostsForTargetedMirroring_forTest(ServiceContext* serviceContext);
 
 /**
  * Gets the executor associated with the MirrorMaestro. Returns a NotYetInitialized status if the

@@ -116,7 +116,6 @@ constexpr auto kMirroredReadsTargetedScheduledKey = "targetedScheduled"_sd;
 MONGO_FAIL_POINT_DEFINE(mirrorMaestroExpectsResponse);
 MONGO_FAIL_POINT_DEFINE(mirrorMaestroTracksPending);
 MONGO_FAIL_POINT_DEFINE(skipRegisteringMirroredReadsTopologyObserverCallback);
-MONGO_FAIL_POINT_DEFINE(skipTriggeringTargetedHostsListRefreshOnServerParamChange);
 MONGO_FAIL_POINT_DEFINE(mirrorMaestroHangDuringTargetedHostUpdate);
 
 using Tag = std::pair<std::string, std::string>;
@@ -168,15 +167,15 @@ public:
      */
     StatusWith<std::vector<HostAndPort>> getCachedHostsForTargetedMirroring();
 
-    /**
-     * Update the list of hosts to target for targeted mirroring. The list of hosts will be updated
-     * iff the config version has been incremented, or the replica set tag being used to target
-     * hosts has been changed.
-     */
-    void updateCachedHostsForTargetedMirroring(bool tagChanged);
-
     auto isInitialized() const {
         return _isInitialized.load();
+    }
+
+    /**
+     * Test only function used to attempt a recomputation of the hosts list.
+     */
+    void recomputeCachedHostsForTargetedMirroring_forTest() {
+        _cachedHostsForTargetedMirroring.maybeUpdateHosts();
     }
 
     void overrideExecutor_forTest(std::shared_ptr<executor::TaskExecutor> executor) {
@@ -253,13 +252,22 @@ public:
          * should be updated upon an increment in config version, or if the user changes the replica
          * set tag that should be used to target nodes.
          */
-        void maybeUpdateHosts(Tag tag, bool tagChanged) {
+        void maybeUpdateHosts(boost::optional<Tag> newTag = boost::none) {
             std::lock_guard lk(_mutex);
-
             mirrorMaestroHangDuringTargetedHostUpdate.pauseWhileSet();
+
+            auto tagChanged = false;
+
+            // Update _tag if applicible.
+            if (newTag) {
+                _tag = *newTag;
+                tagChanged = true;
+            }
+
             invariant(_topologyVersionObserver);
             auto replSetConfig = _topologyVersionObserver->getReplSetConfig();
 
+            // We need an initialized replSetConfig in order to compute the host list.
             if (!replSetConfig.isInitialized()) {
                 LOGV2_INFO(10735900,
                            "Defering computation of targeted mirroring host list since config is "
@@ -269,7 +277,6 @@ public:
             }
 
             _hosts.refreshSnapshot(_taggedHostsSnapshot);
-
             if (MONGO_likely(_taggedHostsSnapshot)) {
                 // The config version and term should never decrease.
                 invariant(replSetConfig.getConfigVersionAndTerm() >=
@@ -292,8 +299,8 @@ public:
             const auto& tagConfig = replSetConfig.getTagConfig();
             for (const auto& member : replSetConfig.members()) {
                 for (auto&& it = member.tagsBegin(); it != member.tagsEnd(); ++it) {
-                    if (tagConfig.getTagKey(*it) == tag.first &&
-                        tagConfig.getTagValue(*it) == tag.second) {
+                    if (tagConfig.getTagKey(*it) == _tag.first &&
+                        tagConfig.getTagValue(*it) == _tag.second) {
                         updatedHostsValue.hosts.push_back(member.getHostAndPort());
                         break;
                     }
@@ -331,33 +338,11 @@ public:
         repl::TopologyVersionObserver* _topologyVersionObserver{nullptr};
         static thread_local VersionedTaggedHostsType::Snapshot _taggedHostsSnapshot;
         VersionedTaggedHostsType _hosts;
+        Tag _tag;
         Atomic<bool> _deferHostCompute{false};
     };
 
 private:
-    friend void updateCachedHostsForTargetedMirroring_forTest(ServiceContext* serviceContext,
-                                                              bool tagChanged);
-
-    friend std::vector<HostAndPort> getCachedHostsForTargetedMirroring_forTest(
-        ServiceContext* serviceContext);
-
-    friend void setMirroringTaskExecutor_forTest(ServiceContext* serviceContext,
-                                                 std::shared_ptr<executor::TaskExecutor> executor);
-
-    /**
-     * Returns the replica set tag that should be used to target mirrored reads.
-     */
-    Tag _getTagForTargetedMirror() const {
-        _params.refreshSnapshot(_paramsSnapshot);
-
-        if (MONGO_likely(_paramsSnapshot)) {
-            const auto& tag = _paramsSnapshot->getTargetedMirroring().getTag();
-            return toTagFromBSON(tag);
-        }
-
-        return {"", ""};
-    }
-
     /**
      * Attempt to mirror invocation to a subset of hosts based on params
      *
@@ -658,16 +643,11 @@ void MirrorMaestroImpl::updateMirroringOptions(MirroredReadsParameters params) {
     // Update the hosts list used for targeted mirroring if targeted mirroring is enabled and the
     // tag has been updated
     _params.refreshSnapshot(_paramsSnapshot);
-
-    if (MONGO_unlikely(skipTriggeringTargetedHostsListRefreshOnServerParamChange.shouldFail())) {
-        return;
-    }
-
     const auto& targetedParams = _paramsSnapshot->getTargetedMirroring();
 
     // If targeted mirroring was previously enabled and is now disabled, clear the tagged hosts list
     if (targetedParams.getSamplingRate() == 0 && !prevTag.isEmpty()) {
-        _cachedHostsForTargetedMirroring.maybeUpdateHosts(toTagFromBSON({}), true /* tagChanged */);
+        _cachedHostsForTargetedMirroring.maybeUpdateHosts(toTagFromBSON({}));
         return;
     }
 
@@ -675,8 +655,7 @@ void MirrorMaestroImpl::updateMirroringOptions(MirroredReadsParameters params) {
     // the hosts list) or if the tag has been updated.
     if (const auto& currTag = targetedParams.getTag(); prevRate == 0 ||
         (targetedParams.getSamplingRate() != 0 && prevTag.woCompare(currTag) != 0)) {
-        _cachedHostsForTargetedMirroring.maybeUpdateHosts(toTagFromBSON(currTag),
-                                                          true /* tagChanged */);
+        _cachedHostsForTargetedMirroring.maybeUpdateHosts(toTagFromBSON(targetedParams.getTag()));
     }
 }
 
@@ -692,17 +671,17 @@ StatusWith<std::vector<HostAndPort>> MirrorMaestroImpl::getCachedHostsForTargete
         return Status(ErrorCodes::NotYetInitialized, "MirrorMaestro is not yet initialized");
     }
 
+    // If we derefed computing the host list, see if we can compute it now.
     if (MONGO_unlikely(_cachedHostsForTargetedMirroring.consumeDeferHostCompute())) {
         const auto& targetedParams = _paramsSnapshot->getTargetedMirroring();
         const auto& currTag = targetedParams.getTag();
-        _cachedHostsForTargetedMirroring.maybeUpdateHosts(toTagFromBSON(currTag),
-                                                          true /* tagChanged */);
-    }
-    return _cachedHostsForTargetedMirroring.getHosts();
-}
 
-void MirrorMaestroImpl::updateCachedHostsForTargetedMirroring(bool tagChanged) {
-    _cachedHostsForTargetedMirroring.maybeUpdateHosts(_getTagForTargetedMirror(), tagChanged);
+        // maybeUpdateHosts will try to early return if nothing that could warrant a host
+        // recomputation has changed. Passing in currTag here will ensure that this doesn't happen.
+        _cachedHostsForTargetedMirroring.maybeUpdateHosts(toTagFromBSON(currTag));
+    }
+
+    return _cachedHostsForTargetedMirroring.getHosts();
 }
 
 void MirrorMaestroImpl::tryMirror(const std::shared_ptr<CommandInvocation>& invocation) {
@@ -995,7 +974,7 @@ void MirrorMaestroImpl::init(ServiceContext* serviceContext) {
     if (MONGO_likely(!skipRegisteringMirroredReadsTopologyObserverCallback.shouldFail())) {
         _topologyVersionObserver.registerTopologyChangeObserver(
             [this](const repl::ReplSetConfig& replSetConfig) {
-                updateCachedHostsForTargetedMirroring(false /* tagChanged */);
+                _cachedHostsForTargetedMirroring.maybeUpdateHosts();
             });
     }
 
@@ -1051,10 +1030,9 @@ StatusWith<std::vector<HostAndPort>> getCachedHostsForTargetedMirroring_forTest(
     return impl.getCachedHostsForTargetedMirroring();
 }
 
-void updateCachedHostsForTargetedMirroring_forTest(ServiceContext* serviceContext,
-                                                   bool tagChanged) {
+void recomputeCachedHostsForTargetedMirroring_forTest(ServiceContext* serviceContext) {
     auto& impl = getMirrorMaestroImpl(serviceContext);
-    impl.updateCachedHostsForTargetedMirroring(tagChanged);
+    impl.recomputeCachedHostsForTargetedMirroring_forTest();
 }
 
 StatusWith<std::shared_ptr<executor::TaskExecutor>> getMirroringTaskExecutor_forTest(

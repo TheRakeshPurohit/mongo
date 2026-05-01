@@ -418,43 +418,6 @@ TEST_F(TargetedMirrorMaestroTest, BasicInitializationEmptyHostsCache) {
     ASSERT(hosts.empty());
 }
 
-TEST_F(TargetedMirrorMaestroTest, UpdateCachedHostsOnUpdatedTag) {
-    // Turn the failpoint on so we can directly test the update function when the tag has changed,
-    // without testing the server parameter update path calls into this path correctly
-    FailPointEnableBlock skipTriggeringTargetedHostsListRefreshOnServerParamChange{
-        "skipTriggeringTargetedHostsListRefreshOnServerParamChange"};
-
-    // First, set the server parameter and update the cached hosts list
-    _serverParameterController =
-        ServerParameterControllerForTest("mirrorReads", kDefaultServerParam);
-
-    auto version = kInitialConfigVersion + 1;
-    auto term = kInitialTermVersion;
-    auto config = setAndVerifyConfig(version, term, kTwoHostsEW, 2);
-
-    // Update cached hosts
-    updateCachedHostsForTargetedMirroring_forTest(getServiceContext(), false /* tagChanged */);
-
-    // Verify hosts were cached
-    auto hosts = getCachedHosts();
-    ASSERT_EQ(hosts.size(), 1);
-    ASSERT_EQ((hosts)[0].toString(), kHost1);
-
-    // Now update the server parameter to change the tag and call update again
-    auto updatedServerParam =
-        BSON("targetedMirroring" << BSON("samplingRate" << 0.1 << "maxTimeMS" << 500 << "tag"
-                                                        << kWestTag));
-    _serverParameterController =
-        ServerParameterControllerForTest("mirrorReads", updatedServerParam);
-
-    updateCachedHostsForTargetedMirroring_forTest(getServiceContext(), true /* tagChanged */);
-
-    // Verify hosts were updated
-    hosts = getCachedHosts();
-    ASSERT_EQ(hosts.size(), 1);
-    ASSERT_EQ((hosts)[0].toString(), kHost2);
-}
-
 TEST_F(TargetedMirrorMaestroTest, AssertCachedHostsUpdatedOnServerParameterChange) {
     // First, set the server parameter and update the cached hosts list
     _serverParameterController =
@@ -465,16 +428,14 @@ TEST_F(TargetedMirrorMaestroTest, AssertCachedHostsUpdatedOnServerParameterChang
     auto config = setAndVerifyConfig(version, term, kTwoHostsEW, 2);
 
     // Update cached hosts
-    updateCachedHostsForTargetedMirroring_forTest(getServiceContext(), false /* tagChanged */);
+    recomputeCachedHostsForTargetedMirroring_forTest(getServiceContext());
 
     // Verify hosts were cached
     auto hosts = getCachedHosts();
     ASSERT_EQ(hosts.size(), 1);
     ASSERT_EQ((hosts)[0].toString(), kHost1);
 
-    // Now update the server parameter to change the tag. This test case does not set the failpoint
-    // to skip updating the hosts list on a server parameter update, so this param change should
-    // trigger the hosts to update
+    // Now update the server parameter to change the tag.
     auto updatedServerParam =
         BSON("targetedMirroring" << BSON("samplingRate" << 0.1 << "maxTimeMS" << 500 << "tag"
                                                         << kWestTag));
@@ -495,7 +456,7 @@ TEST_F(TargetedMirrorMaestroTest, UpdateCachedHostsOnTopologyVersionChange) {
     auto config = setAndVerifyConfig(version, term, kTwoHostsEW, 2);
 
     // Update cached hosts
-    updateCachedHostsForTargetedMirroring_forTest(getServiceContext(), false /* tagChanged */);
+    recomputeCachedHostsForTargetedMirroring_forTest(getServiceContext());
 
     // Verify hosts were cached
     auto hosts = getCachedHosts();
@@ -506,7 +467,7 @@ TEST_F(TargetedMirrorMaestroTest, UpdateCachedHostsOnTopologyVersionChange) {
     version++;
     config = setAndVerifyConfig(version, term, kTwoHostsEE, 2);
 
-    updateCachedHostsForTargetedMirroring_forTest(getServiceContext(), false /* tagChanged */);
+    recomputeCachedHostsForTargetedMirroring_forTest(getServiceContext());
 
     // Verify hosts were updated
     hosts = getCachedHosts();
@@ -523,7 +484,7 @@ TEST_F(TargetedMirrorMaestroTest, NoUpdateToCachedHostsIfTopologyVersionUnchange
     auto config = setAndVerifyConfig(version, term, kTwoHostsEW, 2);
 
     // Update cached hosts
-    updateCachedHostsForTargetedMirroring_forTest(getServiceContext(), false /* tagChanged */);
+    recomputeCachedHostsForTargetedMirroring_forTest(getServiceContext());
 
     // Verify hosts were cached
     auto hosts = getCachedHosts();
@@ -535,7 +496,7 @@ TEST_F(TargetedMirrorMaestroTest, NoUpdateToCachedHostsIfTopologyVersionUnchange
     // happen in production that tags are changed without a change in version.
     config = setAndVerifyConfig(version, term, kTwoHostsEE, 2);
 
-    updateCachedHostsForTargetedMirroring_forTest(getServiceContext(), false /* tagChanged */);
+    recomputeCachedHostsForTargetedMirroring_forTest(getServiceContext());
 
     // Verify hosts were not updated
     hosts = getCachedHosts();
@@ -554,7 +515,7 @@ DEATH_TEST_F(TargetedMirrorMaestroTestDeathTest,
     auto config = setAndVerifyConfig(version, term, kTwoHostsEW, 2);
 
     // Update cached hosts
-    updateCachedHostsForTargetedMirroring_forTest(getServiceContext(), false /* tagChanged */);
+    recomputeCachedHostsForTargetedMirroring_forTest(getServiceContext());
 
     // Verify hosts were cached
     auto hosts = getCachedHosts();
@@ -565,7 +526,7 @@ DEATH_TEST_F(TargetedMirrorMaestroTestDeathTest,
     version--;
     config = setAndVerifyConfig(version, term, kTwoHostsWE, 2);
 
-    updateCachedHostsForTargetedMirroring_forTest(getServiceContext(), false /* tagChanged */);
+    recomputeCachedHostsForTargetedMirroring_forTest(getServiceContext());
 }
 
 TEST_F(TargetedMirrorMaestroTest, UpdateHostsOnNewTermEvenIfLowerConfigVersion) {
@@ -576,7 +537,7 @@ TEST_F(TargetedMirrorMaestroTest, UpdateHostsOnNewTermEvenIfLowerConfigVersion) 
     auto config = setAndVerifyConfig(version, term, kTwoHostsEW, 2);
 
     // Update cached hosts
-    updateCachedHostsForTargetedMirroring_forTest(getServiceContext(), false /* tagChanged */);
+    recomputeCachedHostsForTargetedMirroring_forTest(getServiceContext());
 
     // Verify hosts were cached
     auto hosts = getCachedHosts();
@@ -589,7 +550,7 @@ TEST_F(TargetedMirrorMaestroTest, UpdateHostsOnNewTermEvenIfLowerConfigVersion) 
     term++;
     config = setAndVerifyConfig(version, term, kTwoHostsEE, 2);
 
-    updateCachedHostsForTargetedMirroring_forTest(getServiceContext(), false /* tagChanged */);
+    recomputeCachedHostsForTargetedMirroring_forTest(getServiceContext());
 
     // Verify hosts were updated
     hosts = getCachedHosts();
@@ -610,7 +571,7 @@ TEST_F(TargetedMirrorMaestroTest, AssertExpectedHostsTargeted) {
     auto config = setAndVerifyConfig(version, term, kTwoHostsEW, 2);
 
     // Update cached hosts
-    updateCachedHostsForTargetedMirroring_forTest(getServiceContext(), false /* tagChanged */);
+    recomputeCachedHostsForTargetedMirroring_forTest(getServiceContext());
 
     // Verify hosts were cached
     auto hosts = getCachedHosts();
@@ -643,7 +604,7 @@ TEST_F(TargetedMirrorMaestroTest, UninitializedConfigDefersHostCompute) {
     _replCoord->setGetConfigReturnValue(config);
 
     // Attempt to update cached hosts and assert host size.
-    updateCachedHostsForTargetedMirroring_forTest(service, false /* tagChanged */);
+    recomputeCachedHostsForTargetedMirroring_forTest(service);
     ASSERT_EQ(0, getCachedHosts().size());
 
     // Update the config to be initialized.
