@@ -480,7 +480,7 @@ ResolvedFCVTransition FeatureCompatibilityVersion::validateSetFeatureCompatibili
             "for example, that the request is related to a previous invocation of the "
             "'setFeatureCompatibilityVersion' command which, for example, was temporarily stuck "
             "on network.",
-            *setFCVPhase >= resolvedTransition->startPhase);
+            changeTimestamp > previousTimestamp || *setFCVPhase >= resolvedTransition->startPhase);
 
     // Sharded cluster FCV protocol: Only run the specified phase.
     resolvedTransition->startPhase = *setFCVPhase;
