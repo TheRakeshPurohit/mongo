@@ -2,38 +2,38 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 _WASI_SDK_DIST = {
     ("linux", "aarch64"): {
-        "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-30/wasi-sdk-30.0-arm64-linux.tar.gz",
-        "sha256": "6f2977942308d91b0123978da3c6a0d6fce780994b3b020008c617e26764ea40",
-        "stripPrefix": "wasi-sdk-30.0-arm64-linux",
+        "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-arm64-linux.tar.gz",
+        "sha256": "4f98ee738c7abb45c81a94d1461fc53cc569d1cd01498951c8184d841a027844",
+        "stripPrefix": "wasi-sdk-33.0-arm64-linux",
     },
     ("linux", "amd64"): {
-        "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-30/wasi-sdk-30.0-x86_64-linux.tar.gz",
-        "sha256": "0507679dff16814b74516cd969a9b16d2ced1347388024bc7966264648c78bfb",
-        "stripPrefix": "wasi-sdk-30.0-x86_64-linux",
+        "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-linux.tar.gz",
+        "sha256": "0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce",
+        "stripPrefix": "wasi-sdk-33.0-x86_64-linux",
     },
     ("macos", "aarch64"): {
-        "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-30/wasi-sdk-30.0-arm64-macos.tar.gz",
-        "sha256": "2c2ed99296857e60fd14c3f40fe226231f296409502491094704089c31a16740",
-        "stripPrefix": "wasi-sdk-30.0-arm64-macos",
+        "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-arm64-macos.tar.gz",
+        "sha256": "85c997a2665ead91673b5bb88b7d0df3fc8900df3bfa244f720d478187bbdc78",
+        "stripPrefix": "wasi-sdk-33.0-arm64-macos",
     },
     ("macos", "x86_64"): {
-        "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-30/wasi-sdk-30.0-x86_64-macos.tar.gz",
-        "sha256": "1594a0791309781bf0d0224431c3556ec4a2326b205687b659f6550d08d8b13e",
-        "stripPrefix": "wasi-sdk-30.0-x86_64-macos",
+        "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-macos.tar.gz",
+        "sha256": "18f3f201ba9734e6a4455b0b6410690395a55e9ffa9f6f5066f66083a94b93b3",
+        "stripPrefix": "wasi-sdk-33.0-x86_64-macos",
     },
     ("windows", "amd64"): {
-        "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-30/wasi-sdk-30.0-x86_64-windows.tar.gz",
-        "sha256": "e87d6bf9f9ca3482a75f1cbc630f095b4ae8c98d586708bac7adf08c03b327bc",
-        "stripPrefix": "wasi-sdk-30.0-x86_64-windows",
+        "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-windows.tar.gz",
+        "sha256": "df14ca2a2127c2d6b6be07e6f5549b3af9c1b3c0112430c200a4749970c59f06",
+        "stripPrefix": "wasi-sdk-33.0-x86_64-windows",
     },
     ("linux", "s390x"): {
-        "url": "https://mdb-build-public.s3.amazonaws.com/wasm-toolchain/418/wasi-sdk-30-s390x-rhel80-3d4ea12.tgz",
-        "sha256": "c31c661cc49b7b99e092b3bb5d7365042f9fbeb5495c9ec34d01b096f011e8f2",
+        "url": "https://mdb-build-public.s3.amazonaws.com/wasm-toolchain/435/wasi-sdk-33-s390x-rhel80-c10c050.tgz",
+        "sha256": "77543f0a8a9d1a9c369f4a45a50504d85382cc4809d49d4fd66c65a1e0db6c45",
         "stripPrefix": "",
     },
     ("linux", "ppc64le"): {
-        "url": "https://mdb-build-public.s3.amazonaws.com/wasm-toolchain/420/wasi-sdk-30-ppc64le-rhel81-3d4ea12.tgz",
-        "sha256": "a7ee9e3760dc8cafea9557d1d4fbc8fc2a35ed4cf29a13dd47b8025d5004c57a",
+        "url": "https://mdb-build-public.s3.amazonaws.com/wasm-toolchain/435/wasi-sdk-33-ppc64le-rhel81-c10c050.tgz",
+        "sha256": "bd719f18c9b5d6daddc03b4f7098c3c835269cce97d056f406e226aa39a4fbc8",
         "stripPrefix": "",
     },
 }
