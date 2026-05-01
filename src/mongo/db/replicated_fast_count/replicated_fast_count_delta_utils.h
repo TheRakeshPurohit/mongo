@@ -107,12 +107,15 @@ struct OplogScanResult {
  * aggregates the size count deltas across UUIDs. Only accumulates size count information for
  * "uuidFilter" when provided. Pass 'isCheckpoint=true' only on the checkpoint scan path to
  * increment checkpoint scan counters; leave false (the default) on read paths.
+ *
+ * If a non-none 'oplogUuid' is passed in, tracks updates to the oplog size and count.
  */
 OplogScanResult aggregateSizeCountDeltasInOplog(
     SeekableRecordCursor& oplogCursor,
     const Timestamp& seekAfterTS,
     const boost::optional<UUID>& uuidFilter = boost::none,
-    bool isCheckpoint = false);
+    bool isCheckpoint = false,
+    const boost::optional<UUID>& oplogUuid = boost::none);
 
 /**
  * For each entry in 'deltas', looks up the persisted size and count for that UUID in the

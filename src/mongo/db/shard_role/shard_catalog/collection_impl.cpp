@@ -1137,7 +1137,7 @@ long long CollectionImpl::getCappedMaxSize() const {
 }
 
 long long CollectionImpl::numRecords(OperationContext* opCtx) const {
-    return (isReplicatedFastCountEnabled(opCtx) && isReplicatedFastCountEligible(_ns))
+    return (shouldReadFromReplicatedFastCount(opCtx, _ns))
         ? replicated_fast_count::ReplicatedFastCountManager::get(opCtx->getServiceContext())
                 .find(uuid())
                 .count +
@@ -1146,7 +1146,7 @@ long long CollectionImpl::numRecords(OperationContext* opCtx) const {
 }
 
 long long CollectionImpl::dataSize(OperationContext* opCtx) const {
-    return (isReplicatedFastCountEnabled(opCtx) && isReplicatedFastCountEligible(_ns))
+    return (shouldReadFromReplicatedFastCount(opCtx, _ns))
         ? replicated_fast_count::ReplicatedFastCountManager::get(opCtx->getServiceContext())
                 .find(uuid())
                 .size +
@@ -1155,7 +1155,7 @@ long long CollectionImpl::dataSize(OperationContext* opCtx) const {
 }
 
 CollectionSizeCount CollectionImpl::latestSizeCount(OperationContext* opCtx) const {
-    return (isReplicatedFastCountEnabled(opCtx) && isReplicatedFastCountEligible(_ns))
+    return (shouldReadFromReplicatedFastCount(opCtx, _ns))
         ? replicated_fast_count::ReplicatedFastCountManager::get(opCtx->getServiceContext())
               .findLatest(opCtx, uuid())
         : CollectionSizeCount{_shared->_recordStore->dataSize(),
@@ -1163,7 +1163,7 @@ CollectionSizeCount CollectionImpl::latestSizeCount(OperationContext* opCtx) con
 }
 
 CollectionSizeCount CollectionImpl::persistedSizeCount(OperationContext* opCtx) const {
-    return (isReplicatedFastCountEnabled(opCtx) && isReplicatedFastCountEligible(_ns))
+    return (shouldReadFromReplicatedFastCount(opCtx, _ns))
         ? replicated_fast_count::ReplicatedFastCountManager::get(opCtx->getServiceContext())
               .findPersisted(opCtx, uuid())
         : CollectionSizeCount{_shared->_recordStore->dataSize(),

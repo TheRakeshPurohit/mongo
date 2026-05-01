@@ -37,7 +37,8 @@ CollectionSizeCount readLatest(OperationContext* opCtx,
                                const SizeCountStore& sizeCountStore,
                                const SizeCountTimestampStore& timestampStore,
                                SeekableRecordCursor& cursor,
-                               UUID uuid) {
+                               UUID uuid,
+                               boost::optional<UUID> oplogUuid) {
     const auto entry =
         sizeCountStore.read(opCtx, uuid)
             .value_or(SizeCountStore::Entry(Timestamp::min(), /*size=*/0, /*count=*/0));
@@ -49,7 +50,9 @@ CollectionSizeCount readLatest(OperationContext* opCtx,
     // valid as of the maximum timestamp, so we only need to aggregate deltas after that point in
     // time.
     const Timestamp seekAfterTs = std::max(entry.timestamp, timestamp);
-    const auto deltas = aggregateSizeCountDeltasInOplog(cursor, seekAfterTs, uuid).deltas;
+    const auto deltas = aggregateSizeCountDeltasInOplog(
+                            cursor, seekAfterTs, uuid, /*isCheckpoint=*/false, oplogUuid)
+                            .deltas;
 
     // If there are no oplog entries for this UUID after seekAfterTs, the stored values are already
     // accurate and no delta adjustment is needed.

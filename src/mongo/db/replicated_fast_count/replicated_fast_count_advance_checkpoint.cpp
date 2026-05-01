@@ -53,8 +53,11 @@ SizeCountCheckpoint computeNextCheckpoint(OperationContext* opCtx, Timestamp see
         // read up until the no holes point.
         auto oplogCursor = oplogColl->getRecordStore()->getCursor(
             opCtx, *shard_role_details::getRecoveryUnit(opCtx));
-        return aggregateSizeCountDeltasInOplog(
-            *oplogCursor, seekAfterTimestamp, {}, /*isCheckpoint=*/true);
+        return aggregateSizeCountDeltasInOplog(*oplogCursor,
+                                               seekAfterTimestamp,
+                                               {},
+                                               /*isCheckpoint=*/true,
+                                               oplogColl->uuid());
     }();
 
     // Combine the oplog deltas with the currently persisted totals to produce the absolute values

@@ -54,4 +54,15 @@ MONGO_MOD_PUBLIC bool isReplicatedFastCountEligible(const NamespaceString& nss);
  */
 MONGO_MOD_PUBLIC bool shouldPersistPreparedTxnSizeMetadata(OperationContext* opCtx);
 
+/**
+ * Returns true if we should read the oplog size and count from the size storer.
+ */
+MONGO_MOD_PUBLIC bool shouldReadFromSizeStorerForOplog(OperationContext* opCtx);
+
+/**
+ * Returns true if we should get the size and count for the specified 'nss' from the replicated fast
+ * count system.
+ */
+MONGO_MOD_PUBLIC bool shouldReadFromReplicatedFastCount(OperationContext* opCtx,
+                                                        const NamespaceString& nss);
 }  // namespace mongo

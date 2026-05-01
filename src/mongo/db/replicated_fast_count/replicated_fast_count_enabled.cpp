@@ -48,7 +48,9 @@ bool isReplicatedFastCountEnabled(OperationContext* opCtx) {
 }
 
 bool isReplicatedFastCountEligible(const NamespaceString& nss) {
-    // TODO(SERVER-120741): Allow if the local DB is the oplog.
+    if (nss.isOplog()) {
+        return true;
+    }
     if (nss.isLocalDB() || nss.isImplicitlyReplicated() || nss.isServerConfigurationCollection() ||
         nss.isSystemDotProfile()) {
         return false;
@@ -66,6 +68,20 @@ bool shouldPersistPreparedTxnSizeMetadata(OperationContext* opCtx) {
         gFeatureFlagReplicatedFastCountDurability.isEnabled(
             VersionContext::getDecoration(opCtx),
             serverGlobalParams.featureCompatibility.acquireFCVSnapshot());
+}
+
+bool shouldReadFromSizeStorerForOplog(OperationContext* opCtx) {
+    // TODO SERVER-125772: Create and use a more targeted persistence provider method.
+    return !rss::ReplicatedStorageService::get(opCtx)
+                .getPersistenceProvider()
+                .shouldUseReplicatedFastCount();
+}
+
+bool shouldReadFromReplicatedFastCount(OperationContext* opCtx, const NamespaceString& nss) {
+    const bool isOplogAndShouldReadFromSizeStorer =
+        (nss.isOplog() && shouldReadFromSizeStorerForOplog(opCtx));
+    return isReplicatedFastCountEnabled(opCtx) && isReplicatedFastCountEligible(nss) &&
+        !isOplogAndShouldReadFromSizeStorer;
 }
 
 }  // namespace mongo

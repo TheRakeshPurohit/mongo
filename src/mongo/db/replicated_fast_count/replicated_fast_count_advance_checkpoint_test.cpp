@@ -58,6 +58,13 @@ void createTimestampCollection(repl::StorageInterface* storageInterface, Operati
         CollectionOptions{.clusteredIndex = clustered_util::makeDefaultClusteredIdIndex()}));
 }
 
+UUID getOplogUuid(OperationContext* opCtx) {
+    const auto coll = CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(
+        opCtx, NamespaceString::kRsOplogNamespace);
+    ASSERT_TRUE(coll);
+    return coll->uuid();
+}
+
 class ReplicatedFastCountAdvanceCheckpointTest : public CatalogTestFixture {
 protected:
     static constexpr StringData kDbName = "advance_checkpoint_test"_sd;
@@ -686,6 +693,190 @@ TEST_F(ReplicatedFastCountAdvanceCheckpointTest, TruncateRangeInsideNestedApplyO
     ASSERT_TRUE(entry.has_value());
     EXPECT_EQ(expectedEntry, *entry);
 }
+
+TEST_F(ReplicatedFastCountAdvanceCheckpointTest, OplogFastCountEntryPersistedOnCheckpoint) {
+    ASSERT_FALSE(sizeCountStore.read(opCtx, getOplogUuid(opCtx)).has_value());
+
+    const auto entry1 =
+        test_helpers::makeOplogEntry(Timestamp(1, 1), collA, repl::OpTypeEnum::kInsert, 10);
+    const auto entry2 =
+        test_helpers::makeOplogEntry(Timestamp(1, 2), collA, repl::OpTypeEnum::kInsert, 20);
+    const int64_t expectedSize = static_cast<int64_t>(entry1.getEntry().toBSON().objsize()) +
+        static_cast<int64_t>(entry2.getEntry().toBSON().objsize());
+
+    test_helpers::writeToOplog(opCtx, entry1);
+    test_helpers::writeToOplog(opCtx, entry2);
+    advanceCheckpoint(opCtx, sizeCountStore, timestampStore);
+
+    const auto oplogEntry = sizeCountStore.read(opCtx, getOplogUuid(opCtx));
+    ASSERT_TRUE(oplogEntry.has_value());
+    EXPECT_EQ(oplogEntry->count, 2);
+    EXPECT_EQ(oplogEntry->size, expectedSize);
+    EXPECT_EQ(oplogEntry->timestamp, Timestamp(1, 2));
+}
+
+TEST_F(ReplicatedFastCountAdvanceCheckpointTest, OplogFastCountEntryMultipleCheckpoints) {
+    ASSERT_FALSE(sizeCountStore.read(opCtx, getOplogUuid(opCtx)).has_value());
+
+    const auto entry1 =
+        test_helpers::makeOplogEntry(Timestamp(1, 1), collA, repl::OpTypeEnum::kInsert, 10);
+    const int64_t size1 = static_cast<int64_t>(entry1.getEntry().toBSON().objsize());
+    test_helpers::writeToOplog(opCtx, entry1);
+    advanceCheckpoint(opCtx, sizeCountStore, timestampStore);
+
+    const auto oplogEntryAfterFirstChkpt = sizeCountStore.read(opCtx, getOplogUuid(opCtx));
+    ASSERT_TRUE(oplogEntryAfterFirstChkpt.has_value());
+    EXPECT_EQ(oplogEntryAfterFirstChkpt->count, 1);
+    EXPECT_EQ(oplogEntryAfterFirstChkpt->size, size1);
+    EXPECT_EQ(oplogEntryAfterFirstChkpt->timestamp, Timestamp(1, 1));
+
+    const auto entry2 =
+        test_helpers::makeOplogEntry(Timestamp(1, 2), collA, repl::OpTypeEnum::kInsert, 20);
+    const int64_t size2 = static_cast<int64_t>(entry2.getEntry().toBSON().objsize());
+    test_helpers::writeToOplog(opCtx, entry2);
+    advanceCheckpoint(opCtx, sizeCountStore, timestampStore);
+
+    const auto oplogEntryAfterSecondChkpt = sizeCountStore.read(opCtx, getOplogUuid(opCtx));
+    ASSERT_TRUE(oplogEntryAfterSecondChkpt.has_value());
+    EXPECT_EQ(oplogEntryAfterSecondChkpt->count, 2);
+    EXPECT_EQ(oplogEntryAfterSecondChkpt->size, size1 + size2);
+    EXPECT_EQ(oplogEntryAfterSecondChkpt->timestamp, Timestamp(1, 2));
+}
+
+TEST_F(ReplicatedFastCountAdvanceCheckpointTest, OplogAndUserCollectionTrackedIndependently) {
+    const int64_t userDocSize = 50;
+    const auto entry1 = test_helpers::makeOplogEntry(
+        Timestamp(1, 1), collA, repl::OpTypeEnum::kInsert, userDocSize);
+    const auto entry2 = test_helpers::makeOplogEntry(
+        Timestamp(1, 2), collA, repl::OpTypeEnum::kUpdate, userDocSize);
+    const int64_t totalOplogEntrySize = static_cast<int64_t>(entry1.getEntry().toBSON().objsize()) +
+        static_cast<int64_t>(entry2.getEntry().toBSON().objsize());
+
+    test_helpers::writeToOplog(opCtx, entry1);
+    test_helpers::writeToOplog(opCtx, entry2);
+    advanceCheckpoint(opCtx, sizeCountStore, timestampStore);
+
+    // The user fast count entry should store the size and count of user documents.
+    const auto userEntry = sizeCountStore.read(opCtx, collA.uuid);
+    ASSERT_TRUE(userEntry.has_value());
+    EXPECT_EQ(userEntry->size, userDocSize * 2);
+    EXPECT_EQ(userEntry->count, 1);
+
+    // The oplog fast count entry should store oplog entry size and count, unrelated to user
+    // document count and size.
+    const auto oplogEntry = sizeCountStore.read(opCtx, getOplogUuid(opCtx));
+    ASSERT_TRUE(oplogEntry.has_value());
+    EXPECT_EQ(oplogEntry->count, 2);
+    EXPECT_EQ(oplogEntry->size, totalOplogEntrySize);
+
+    // Sanity check: oplog entry size and count and user document size and count are different.
+    EXPECT_NE(oplogEntry->size, userEntry->size);
+    EXPECT_NE(oplogEntry->count, userEntry->count);
+}
+
+TEST_F(ReplicatedFastCountAdvanceCheckpointTest, NoOplogEntriesDoesNotCreateOplogEntry) {
+    EXPECT_FALSE(sizeCountStore.read(opCtx, getOplogUuid(opCtx)).has_value());
+
+    advanceCheckpoint(opCtx, sizeCountStore, timestampStore);
+
+    EXPECT_FALSE(sizeCountStore.read(opCtx, getOplogUuid(opCtx)).has_value());
+}
+
+TEST_F(ReplicatedFastCountAdvanceCheckpointTest,
+       OnlyWritesToFastCountCollDoesNotCreateOplogFastCountEntry) {
+    EXPECT_FALSE(sizeCountStore.read(opCtx, getOplogUuid(opCtx)).has_value());
+
+    const test_helpers::NsAndUUID fastCountNsAndUUID{
+        .nss =
+            NamespaceString::makeGlobalConfigCollection(NamespaceString::kReplicatedFastCountStore),
+        .uuid = UUID::gen()};
+    test_helpers::writeToOplog(opCtx,
+                               test_helpers::makeOplogEntry(
+                                   Timestamp(1, 1), fastCountNsAndUUID, repl::OpTypeEnum::kUpdate));
+
+    advanceCheckpoint(opCtx, sizeCountStore, timestampStore);
+
+    EXPECT_FALSE(sizeCountStore.read(opCtx, getOplogUuid(opCtx)).has_value());
+}
+
+TEST_F(ReplicatedFastCountAdvanceCheckpointTest, OplogTruncationUpdatesOplogFastCount) {
+    const UUID oplogUuid = getOplogUuid(opCtx);
+    const int64_t oplogStartingSize = 1000;
+    const int64_t oplogStartingCount = 10;
+
+    {
+        WriteUnitOfWork wuow(opCtx);
+        sizeCountStore.write(
+            opCtx,
+            oplogUuid,
+            SizeCountStore::Entry{Timestamp(1, 1), oplogStartingSize, oplogStartingCount});
+        timestampStore.write(opCtx, Timestamp(1, 1));
+        wuow.commit();
+    }
+
+    const int64_t numBytesTruncated = 400;
+    const int64_t numEntriesTruncated = 4;
+    const auto truncateEntry = test_helpers::makeTruncateRangeOplogEntry(
+        Timestamp(1, 2),
+        {.nss = NamespaceString::kRsOplogNamespace, .uuid = oplogUuid},
+        numBytesTruncated,
+        numEntriesTruncated);
+    const int64_t truncateEntrySize =
+        static_cast<int64_t>(truncateEntry.getEntry().toBSON().objsize());
+
+    test_helpers::writeToOplog(opCtx, truncateEntry);
+    advanceCheckpoint(opCtx, sizeCountStore, timestampStore);
+
+    const auto entry = sizeCountStore.read(opCtx, oplogUuid);
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_EQ(entry->size, oplogStartingSize + truncateEntrySize - numBytesTruncated);
+    EXPECT_EQ(entry->count, oplogStartingCount + 1 - numEntriesTruncated);
+    EXPECT_EQ(entry->timestamp, Timestamp(1, 2));
+}
+
+TEST_F(ReplicatedFastCountAdvanceCheckpointTest,
+       MixOfUserWritesAndTruncationUpdatesOplogEntryCorrectly) {
+    const UUID oplogUuid = getOplogUuid(opCtx);
+    const int64_t oplogStartingSize = 2000;
+    const int64_t oplogStartingCount = 20;
+
+    {
+        WriteUnitOfWork wuow(opCtx);
+        sizeCountStore.write(
+            opCtx,
+            oplogUuid,
+            SizeCountStore::Entry{Timestamp(1, 1), oplogStartingSize, oplogStartingCount});
+        timestampStore.write(opCtx, Timestamp(1, 1));
+        wuow.commit();
+    }
+
+    // A user insert arrives before the truncation.
+    const auto userInsertEntry =
+        test_helpers::makeOplogEntry(Timestamp(1, 2), collA, repl::OpTypeEnum::kInsert, 50);
+    const int64_t userInsertSize =
+        static_cast<int64_t>(userInsertEntry.getEntry().toBSON().objsize());
+    test_helpers::writeToOplog(opCtx, userInsertEntry);
+
+    const int64_t numBytesTruncated = 500;
+    const int64_t numEntriesTruncated = 5;
+    const auto truncateEntry = test_helpers::makeTruncateRangeOplogEntry(
+        Timestamp(1, 3),
+        {.nss = NamespaceString::kRsOplogNamespace, .uuid = oplogUuid},
+        numBytesTruncated,
+        numEntriesTruncated);
+    const int64_t truncateEntrySize =
+        static_cast<int64_t>(truncateEntry.getEntry().toBSON().objsize());
+    test_helpers::writeToOplog(opCtx, truncateEntry);
+
+    advanceCheckpoint(opCtx, sizeCountStore, timestampStore);
+
+    const auto entry = sizeCountStore.read(opCtx, oplogUuid);
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_EQ(entry->size,
+              oplogStartingSize + userInsertSize + truncateEntrySize - numBytesTruncated);
+    EXPECT_EQ(entry->count, oplogStartingCount + 2 - numEntriesTruncated);
+}
+
 
 }  // namespace
 }  // namespace mongo::replicated_fast_count

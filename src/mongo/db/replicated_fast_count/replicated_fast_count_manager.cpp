@@ -240,7 +240,10 @@ CollectionSizeCount ReplicatedFastCountManager::findLatest(OperationContext* opC
     auto oplogCursor = oplogColl->getRecordStore()->getCursor(
         opCtx, *shard_role_details::getRecoveryUnit(opCtx), /*forward=*/true);
 
-    return readLatest(opCtx, *_sizeCountStore, *_timestampStore, *oplogCursor, uuid);
+    boost::optional<UUID> oplogUuid =
+        (uuid == oplogColl->uuid()) ? boost::make_optional(uuid) : boost::none;
+
+    return readLatest(opCtx, *_sizeCountStore, *_timestampStore, *oplogCursor, uuid, oplogUuid);
 }
 
 CollectionSizeCount ReplicatedFastCountManager::findPersisted(OperationContext* opCtx,

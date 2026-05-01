@@ -249,6 +249,8 @@ int processOplogEntry(const repl::OplogEntry& entry,
     }
     if (entry.getCommandType() == repl::OplogEntry::CommandType::kTruncateRange) {
         const auto delta = extractSizeCountDeltaForTruncateRange(entry);
+        // Truncation returns an estimate on the number of records and bytes that were removed. We
+        // accept that size and count might be slightly off after performing truncation.
         recordCollectionSizeCountDelta(*entryUuid, delta, sizeCountDeltasOut);
         return 1;
     }
@@ -333,13 +335,22 @@ int extractSizeCountDeltasForApplyOps(const repl::OplogEntry& applyOpsEntry,
 OplogScanResult aggregateSizeCountDeltasInOplog(SeekableRecordCursor& oplogCursor,
                                                 const Timestamp& seekAfterTS,
                                                 const boost::optional<UUID>& uuidFilter,
-                                                bool isCheckpoint) {
+                                                bool isCheckpoint,
+                                                const boost::optional<UUID>& oplogUuid) {
     OplogScanResult result;
     RecordId seekRid =
         massertStatusOK(record_id_helpers::keyForOptime(seekAfterTS, KeyFormat::Long));
 
+    const bool trackOplog = oplogUuid.has_value();
+
     for (auto rec = oplogCursor.seek(seekRid, SeekableRecordCursor::BoundInclusion::kExclude); rec;
          rec = oplogCursor.next()) {
+
+        if (trackOplog) {
+            result.deltas[*oplogUuid].sizeCount.size += static_cast<int64_t>(rec->data.size());
+            result.deltas[*oplogUuid].sizeCount.count += 1;
+        }
+
         const auto entry = massertStatusOK(repl::OplogEntry::parse(rec->data.toBson()));
         const auto& nss = entry.getNss();
         // Do not advance lastTimestamp for writes to the fast count store collections themselves.
@@ -358,6 +369,17 @@ OplogScanResult aggregateSizeCountDeltasInOplog(SeekableRecordCursor& oplogCurso
             recordCheckpointSizeCountEntryProcessed(numSizeCountEntries);
         }
     }
+
+    // If we did not advance the timestamp (i.e, we did not see any oplog entries for operations
+    // that were not on the fast count collections themselves), we shouldn't persist any deltas. We
+    // update the delta entry for the oplogUuid unconditionally, so if we only saw oplog entries on
+    // fast count collections we should remove the entry here and keep 'deltas' empty.
+    // The size and count of oplog entries operating on fast count collections will be included in
+    // the next checkpoint pass that includes operations on non-fast-count collections.
+    if (isCheckpoint && trackOplog && !result.lastTimestamp) {
+        result.deltas.erase(*oplogUuid);
+    }
+
     return result;
 }
 

@@ -32,6 +32,7 @@
 #include "mongo/db/replicated_fast_count/replicated_fast_count_init.h"
 #include "mongo/db/replicated_fast_count/replicated_fast_count_test_helpers.h"
 #include "mongo/db/shard_role/shard_catalog/catalog_test_fixture.h"
+#include "mongo/db/shard_role/shard_catalog/collection_catalog.h"
 
 namespace mongo::replicated_fast_count {
 namespace {
@@ -323,6 +324,53 @@ TEST_F(ReadLatestTest, OnlyUpdateOpsResultInZeroCountDelta) {
     // Updates contribute size deltas but zero count delta, so count stays the same.
     EXPECT_EQ(readLatest(operationContext(), sizeCountStore, timestampStore, cursor, collA.uuid),
               CollectionSizeCount({.size = 100 + 10 + 20 - 5, .count = 5}));
+}
+
+TEST_F(ReadLatestTest, TracksOplogWhenOplogUuidPassed) {
+    const UUID oplogUuid =
+        CollectionCatalog::get(operationContext())
+            ->lookupCollectionByNamespace(operationContext(), NamespaceString::kRsOplogNamespace)
+            ->uuid();
+
+    const auto entry1 =
+        test_helpers::makeOplogEntry(Timestamp(1, 1), collA, repl::OpTypeEnum::kInsert, 10);
+    const auto entry2 =
+        test_helpers::makeOplogEntry(Timestamp(1, 2), collA, repl::OpTypeEnum::kInsert, 20);
+    const int64_t expectedSize = static_cast<int64_t>(entry1.getEntry().toBSON().objsize()) +
+        static_cast<int64_t>(entry2.getEntry().toBSON().objsize());
+
+    OplogCursorMock cursor({entry1, entry2});
+    CollectionSizeCountStore sizeCountStore;
+    CollectionSizeCountTimestampStore timestampStore;
+
+    EXPECT_EQ(readLatest(operationContext(),
+                         sizeCountStore,
+                         timestampStore,
+                         cursor,
+                         /*uuidFilter=*/oplogUuid,
+                         /*oplogUuid=*/oplogUuid),
+              CollectionSizeCount({.size = expectedSize, .count = 2}));
+}
+
+TEST_F(ReadLatestTest, DoesNotTrackOplogWhenOplogUuidNotPassed) {
+    const UUID oplogUuid =
+        CollectionCatalog::get(operationContext())
+            ->lookupCollectionByNamespace(operationContext(), NamespaceString::kRsOplogNamespace)
+            ->uuid();
+
+    const auto entry1 =
+        test_helpers::makeOplogEntry(Timestamp(1, 1), collA, repl::OpTypeEnum::kInsert, 10);
+    OplogCursorMock cursor({entry1});
+    CollectionSizeCountStore sizeCountStore;
+    CollectionSizeCountTimestampStore timestampStore;
+
+    EXPECT_EQ(readLatest(operationContext(),
+                         sizeCountStore,
+                         timestampStore,
+                         cursor,
+                         /*uuidFilter=*/oplogUuid,
+                         /*oplogUuid=*/boost::none),
+              CollectionSizeCount({.size = 0, .count = 0}));
 }
 
 class ReadPersistedTest : public CatalogTestFixture {
