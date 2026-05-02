@@ -1379,53 +1379,53 @@ void AsyncResultsMerger::_handleBatchResponse(WithLock lk,
                        parsedResponse.getStatus(),
                        remote->shardHostAndPort,
                        cbData.response.getErrorLabels())) {
+            const auto delay = retryStrategy.getNextRetryDelay();
+            auto callback = [weak = weak_from_this(),
+                             request = cbData.request,
+                             remote /* intrusive_ptr copy! */,
+                             delay](Status s) {
+                auto self = weak.lock();
+                if (!self) {
+                    // Do not continue here if the last shared_ptr pointing to this
+                    // 'AsyncResultsMerger' instance has already gone out of scope. In this case
+                    // there is no need to schedule further retries.
+                    return;
+                }
+
+                std::lock_guard<std::mutex> lk(self->_mutex);
+
+                if (self->_lifecycleState != kAlive || !self->_status.isOK()) {
+                    remote->outstandingRequest = false;
+                    self->_signalCurrentEventIfReady(
+                        lk);  // First, wake up anyone waiting on '_currentEvent'.
+                    if (self->_lifecycleState == kKillStarted) {
+                        self->_cleanUpKilledBatch(lk);
+                    }
+                    return;
+                }
+
+                remote->retryStrategy.recordBackoff(delay);
+                auto status = self->_sendRequestWithRetries(lk, request, remote);
+                if (!status.isOK()) {
+                    self->_signalCurrentEventIfReady(lk);
+                }
+            };
             if (!_opCtx) {
                 // ARM is detached — scheduling a retry on the dead SubBaton would cause it to
                 // resolve immediately and attempt to re-acquire _mutex on the same thread,
-                // deadlocking. Instead, leave the remote in a retriable state ('outstandingRequest'
-                // already cleared, no error set, cursor ID still valid). On reattach,
-                // '_scheduleGetMores()' will see the remote and re-send the getMore naturally.
-                _signalCurrentEventIfReady(lk);
-                return;
+                // deadlocking. Instead, wait on the executor.
+                _executor->sleepFor(delay, _cancellationSource.token()).getAsync(callback);
+            } else {
+                // Schedule a retry for the request on the baton. The 'AsyncResultsMerger' instance
+                // is captured here using a weak_ptr, so that the scheduled retry operation does not
+                // block the destruction of the instance. If the retry is scheduled after the
+                // instance was destroyed, we will notice this inside the callback and do nothing.
+                _subBaton
+                    ->waitUntil(getGlobalServiceContext()->getPreciseClockSource()->now() + delay,
+                                _cancellationSource.token())
+                    .thenRunOn(_executor)
+                    .getAsync(callback);
             }
-            // Schedule a retry for the request on the baton. The 'AsyncResultsMerger' instance is
-            // captured here using a weak_ptr, so that the scheduled retry operation does not block
-            // the destruction of the instance. If the retry is scheduled after the instance was
-            // destroyed, we will notice this inside the callback and do nothing.
-            const auto delay = retryStrategy.getNextRetryDelay();
-            _subBaton
-                ->waitUntil(getGlobalServiceContext()->getPreciseClockSource()->now() + delay,
-                            _cancellationSource.token())
-                .getAsync([weak = weak_from_this(),
-                           request = cbData.request,
-                           remote /* intrusive_ptr copy! */,
-                           delay](Status s) {
-                    auto self = weak.lock();
-                    if (!self) {
-                        // Do not continue here if the last shared_ptr pointing to this
-                        // 'AsyncResultsMerger' instance has already gone out of scope. In this case
-                        // there is no need to schedule further retries.
-                        return;
-                    }
-
-                    std::lock_guard<std::mutex> lk(self->_mutex);
-
-                    if (self->_lifecycleState != kAlive || !self->_status.isOK()) {
-                        remote->outstandingRequest = false;
-                        self->_signalCurrentEventIfReady(
-                            lk);  // First, wake up anyone waiting on '_currentEvent'.
-                        if (self->_lifecycleState == kKillStarted) {
-                            self->_cleanUpKilledBatch(lk);
-                        }
-                        return;
-                    }
-
-                    remote->retryStrategy.recordBackoff(delay);
-                    auto status = self->_sendRequestWithRetries(lk, request, remote);
-                    if (!status.isOK()) {
-                        self->_signalCurrentEventIfReady(lk);
-                    }
-                });
 
             remote->outstandingRequest = true;
             return;

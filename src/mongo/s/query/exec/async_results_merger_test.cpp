@@ -4576,7 +4576,6 @@ TEST(NextHighWaterMarkDeterminingStrategyTest,
 }
 
 TEST_F(AsyncResultsMergerTest, DontRetryRequestIfErrorLabelsDontIncludeARetryableError) {
-
     const auto backOffDelayMs = 1000;
     FailPointEnableBlock fp{"setBackoffDelayForTesting", BSON("backoffDelayMs" << backOffDelayMs)};
 
@@ -5006,6 +5005,57 @@ TEST_F(AsyncResultsMergerTest,
     }
 }
 
+// Regression test for SERVER-123537: '_handleBatchResponse()' self-deadlocked the reactor thread
+// when a retry is scheduled through a dead SubBaton.
+// Root cause: '_handleBatchResponse()' is called while holding '_mutex'. In the retry path it calls
+// '_subBaton->waitUntil(...)'. If the SubBaton is dead (parent baton detached), 'waitUntil()'
+// returns an already-resolved future. Before the fix, '.getAsync()' on that future invoked the
+// callback inline on the same thread that already held '_mutex', causing a self-deadlock.
+TEST_F(AsyncResultsMergerTest, RetryWithDeadSubBatonDoesNotDeadlock) {
+    const auto backOffDelayMs = 1000;
+    FailPointEnableBlock fp{"setBackoffDelayForTesting", BSON("backoffDelayMs" << backOffDelayMs)};
+
+    const BSONObj retryableErrorResponse = makeResponseObjWithErrorLabels(
+        ErrorCodes::HostUnreachable,
+        "dummy msg",
+        {ErrorLabel::kRetryableError, ErrorLabel::kSystemOverloadedError});
+
+    std::vector<RemoteCursor> cursors;
+    cursors.push_back(
+        makeRemoteCursor(kTestShardIds[0], kTestShardHosts[0], CursorResponse(kTestNss, 1, {})));
+    auto arm = makeARMFromExistingCursors(std::move(cursors));
+
+    ASSERT_FALSE(arm->ready());
+    auto readyEvent = unittest::assertGet(arm->nextEvent());
+
+    // Detach the ARM from its opCtx so that the SubBaton becomes dead. This simulates the
+    // scenario where the original opCtx's baton is detached before the shard response arrives (e.g.
+    // the cursor is checked in between getMores).
+    arm->detachFromOperationContext();
+
+    // Schedule a retryable error response. '_handleBatchResponse()' will enter the retry path.
+    scheduleNetworkResponseObjs({retryableErrorResponse});
+
+    // Reattach before delivering the success response so the ARM is in a clean state.
+    arm->reattachToOperationContext(operationContext());
+
+    advanceTime(Milliseconds(backOffDelayMs + 1));
+
+    // Deliver a success response for the retried getMore request.
+    std::vector<CursorResponse> successResponse;
+    successResponse.emplace_back(kTestNss, CursorId(0), std::vector<BSONObj>{fromjson("{_id: 1}")});
+    scheduleNetworkResponses(std::move(successResponse));
+
+    ASSERT_TRUE(executor()->waitForEvent(operationContext(), readyEvent).isOK());
+    ASSERT_TRUE(arm->ready());
+
+    ASSERT_BSONOBJ_EQ(fromjson("{_id: 1}"), *unittest::assertGet(arm->nextReady()).getResult());
+
+    // Cursor exhausted (cursor id 0).
+    ASSERT_TRUE(arm->ready());
+    ASSERT_TRUE(unittest::assertGet(arm->nextReady()).isEOF());
+}
+
 // SERVER-123611: The getAsync retry callback called '_cleanUpKilledBatch()' unconditionally on any
 // non-alive or non-OK-status condition, but '_cleanUpKilledBatch()' tasserts if lifecycle is not
 // exactly 'kKillStarted'.
@@ -5112,10 +5162,6 @@ TEST_F(AsyncResultsMergerTest, RetryableErrorWhileDetachedDoesNotDeadlockAndRetr
     // retry callback inline on the same thread that holds _mutex.
     scheduleNetworkResponseObjs({retryableErrorResponse});
 
-    // With the fix the ARM signals the event (no outstanding requests) and leaves the remote in a
-    // retryable state. Waiting on the event must not hang.
-    ASSERT_TRUE(executor()->waitForEvent(operationContext(), readyEvent).isOK());
-
     // No results and no error: the ARM is not ready, but the remote is still open.
     ASSERT_FALSE(arm->ready());
 
@@ -5123,17 +5169,14 @@ TEST_F(AsyncResultsMergerTest, RetryableErrorWhileDetachedDoesNotDeadlockAndRetr
     // getMore for the remote that has no outstanding request and no buffered results.
     arm->reattachToOperationContext(operationContext());
 
-    readyEvent = unittest::assertGet(arm->nextEvent());
-
-    // The retry getMore is now scheduled directly (no baton delay). Respond with success.
-    {
-        std::vector<CursorResponse> responses;
-        std::vector<BSONObj> batch = {fromjson("{_id: 1}"), fromjson("{_id: 2}")};
-        responses.emplace_back(kTestNss, CursorId(0), batch);
-        scheduleNetworkResponses(std::move(responses));
-    }
+    // The retry getMore is now scheduled on the executor. Respond with success.
+    std::vector<CursorResponse> responses;
+    std::vector<BSONObj> batch = {fromjson("{_id: 1}"), fromjson("{_id: 2}")};
+    responses.emplace_back(kTestNss, CursorId(0), batch);
+    scheduleNetworkResponses(std::move(responses));
 
     ASSERT_TRUE(executor()->waitForEvent(operationContext(), readyEvent).isOK());
+
     ASSERT_TRUE(arm->ready());
     ASSERT_TRUE(arm->remotesExhausted());
 
