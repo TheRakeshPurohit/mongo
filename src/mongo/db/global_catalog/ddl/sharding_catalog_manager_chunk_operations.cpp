@@ -459,7 +459,7 @@ void bumpCollectionMinorVersion(OperationContext* opCtx,
 
 unsigned int getHistoryWindowInSeconds() {
     if (MONGO_unlikely(overrideHistoryWindowInSecs.shouldFail())) {
-        int secs;
+        int secs = 0;
         overrideHistoryWindowInSecs.execute([&](const BSONObj& data) {
             secs = data["seconds"].numberInt();
             LOGV2(7351500,
