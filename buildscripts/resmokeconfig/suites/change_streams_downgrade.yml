@@ -322,7 +322,6 @@ executor:
       # shutdown). Workaround by relying on the requires_fastcount/dbstats/collstats/datasize and
       # uses_parallel_shell tags to denylist tests that uses them unsafely.
       eval: >-
-        globalThis.testingReplication = true;
         await import('jstests/libs/override_methods/network_error_and_txn_override.js');
         globalThis.db = connect(TestData.connectionString);
         await import("jstests/libs/override_methods/enable_sessions.js");
