@@ -1268,6 +1268,52 @@ class TestCopybaraConfigHelpers(unittest.TestCase):
             self.assertEqual(branch_to_fragment["v8.2.6-hotfix"], fragment_dir / "v8_2.sky")
             self.assertNotIn("v8.2.7", branch_to_fragment)
 
+    def test_discover_copybara_branches_skips_disabled_fragments(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_base_copybara_config(get_repo_base_copybara_config_path(root))
+            write_copybara_path_rules(
+                get_repo_copybara_path_rules_path(root),
+                common_includes=DEFAULT_TEST_COPYBARA_PATH_RULES_INCLUDES,
+                common_excludes=DEFAULT_TEST_COPYBARA_PATH_RULES_EXCLUDES,
+            )
+            write_copybara_path_rules_module(
+                get_repo_copybara_path_rules_module_path(root),
+                get_repo_copybara_path_rules_path(root),
+            )
+            fragment_dir = root / "buildscripts" / "copybara"
+            fragment_dir.mkdir(parents=True, exist_ok=True)
+            (fragment_dir / "master.sky").write_text('sync_branch("master")\n')
+            (fragment_dir / "v8_0.sky").write_text(
+                '"""Copybara branch definitions for v8.0."""\n\n#sync_branch("v8.0")\n'
+            )
+
+            branch_to_fragment = sync_repo_with_copybara.discover_copybara_branches(tmpdir)
+
+            self.assertEqual(branch_to_fragment, {"master": fragment_dir / "master.sky"})
+
+    def test_discover_copybara_branches_ignores_fragments_without_sync_call(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_base_copybara_config(get_repo_base_copybara_config_path(root))
+            write_copybara_path_rules(
+                get_repo_copybara_path_rules_path(root),
+                common_includes=DEFAULT_TEST_COPYBARA_PATH_RULES_INCLUDES,
+                common_excludes=DEFAULT_TEST_COPYBARA_PATH_RULES_EXCLUDES,
+            )
+            write_copybara_path_rules_module(
+                get_repo_copybara_path_rules_module_path(root),
+                get_repo_copybara_path_rules_path(root),
+            )
+            fragment_dir = root / "buildscripts" / "copybara"
+            fragment_dir.mkdir(parents=True, exist_ok=True)
+            (fragment_dir / "master.sky").write_text('sync_branch("master")\n')
+            (fragment_dir / "typo.sky").write_text('sync_brach("v8.0")\n')
+
+            branch_to_fragment = sync_repo_with_copybara.discover_copybara_branches(tmpdir)
+
+            self.assertEqual(branch_to_fragment, {"master": fragment_dir / "master.sky"})
+
     def test_resolve_requested_branches_preserves_user_order(self):
         branch_to_fragment = {
             "master": Path("master.sky"),
