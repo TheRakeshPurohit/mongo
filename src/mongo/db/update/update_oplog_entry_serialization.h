@@ -80,10 +80,12 @@ boost::optional<BSONObj> extractDiffFromOplogEntry(const BSONObj& opLog);
 
 /**
  * Produce the contents of the 'o' field of a replacement style oplog entry.
+ *
+ * If 'replacement' contains an _id field that is not already the first field, this returns a copy
+ * with _id moved to the front so that the oplog entry matches the on-disk field order produced by
+ * fixDocumentForInsert(). If _id is already first (or absent), 'replacement' is returned unchanged.
  */
-inline BSONObj makeReplacementOplogEntry(const BSONObj& replacement) {
-    return replacement;
-}
+BSONObj makeReplacementOplogEntry(const BSONObj& replacement);
 
 /**
  * Given the 'o' field of an update oplog entry, determine its type. Throws if the object is not of

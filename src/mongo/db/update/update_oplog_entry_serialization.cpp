@@ -48,6 +48,37 @@ BSONObj makeDeltaOplogEntry(const doc_diff::Diff& diff) {
     return builder.obj();
 }
 
+BSONObj makeReplacementOplogEntry(const BSONObj& replacement) {
+    // The on-disk representation of an inserted/replaced document always has _id as the first
+    // field (see fixDocumentForInsert()). Mirror that ordering in the oplog entry so that
+    // downstream consumers (e.g. change streams' fullDocument) see the same field order as the
+    // stored document.
+    BSONObjIterator it(replacement);
+    if (!it.more()) {
+        return replacement;
+    }
+    BSONElement first = it.next();
+    if (first.fieldNameStringData() == "_id"_sd) {
+        return replacement;
+    }
+    BSONElement idElem = replacement["_id"];
+    if (!idElem) {
+        return replacement;
+    }
+
+    BSONObjBuilder builder(replacement.objsize());
+    builder.append(idElem);
+    builder.append(first);
+    while (it.more()) {
+        BSONElement next = it.next();
+        if (next.fieldNameStringData() == "_id"_sd) {
+            continue;
+        }
+        builder.append(next);
+    }
+    return builder.obj();
+}
+
 boost::optional<BSONObj> extractDiffFromOplogEntry(const BSONObj& opLog) {
     auto version = opLog["$v"];
     if (version.ok() &&

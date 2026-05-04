@@ -238,7 +238,8 @@ TEST_F(UpdateTestFixture, CanAddImmutableId) {
     ASSERT_FALSE(result.noop);
     ASSERT_EQUALS(fromjson("{c: 1, _id: 0}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
-    ASSERT_BSONOBJ_BINARY_EQ(fromjson("{c: 1, _id: 0}"), result.oplogEntry);
+    // makeReplacementOplogEntry reorders _id to be the first field.
+    ASSERT_BSONOBJ_BINARY_EQ(fromjson("{_id: 0, c: 1}"), result.oplogEntry);
 }
 
 TEST_F(UpdateTestFixture, CannotCreateDollarPrefixedName) {

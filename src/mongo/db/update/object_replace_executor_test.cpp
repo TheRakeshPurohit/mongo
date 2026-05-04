@@ -324,7 +324,8 @@ TEST_F(ObjectReplaceExecutorTest, DuplicateIdFieldsCheckAllowsCorrection) {
     ASSERT_FALSE(result.noop);
     ASSERT_EQUALS(fromjson("{a: 4, _id: 3}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
-    ASSERT_BSONOBJ_BINARY_EQ(fromjson("{a: 4, _id: 3}"), result.oplogEntry);
+    // makeReplacementOplogEntry reorders _id to be the first field.
+    ASSERT_BSONOBJ_BINARY_EQ(fromjson("{_id: 3, a: 4}"), result.oplogEntry);
 }
 
 TEST_F(ObjectReplaceExecutorTest, DuplicateIdFieldsCheckAllowsNoop) {

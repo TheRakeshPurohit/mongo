@@ -118,6 +118,29 @@ DEATH_TEST_REGEX(UpdateOplogSerializationTestDeathTest,
     isFieldRemovedByUpdate(o, "x");
 }
 
+TEST(UpdateOplogSerializationTest, MakeReplacementOplogEntryMovesIdFirst) {
+    auto in = BSON("a" << 1 << "b" << 2 << "_id" << 7);
+    auto out = makeReplacementOplogEntry(in);
+    ASSERT_BSONOBJ_BINARY_EQ(BSON("_id" << 7 << "a" << 1 << "b" << 2), out);
+}
+
+TEST(UpdateOplogSerializationTest, MakeReplacementOplogEntryNoopWhenIdAlreadyFirst) {
+    auto in = BSON("_id" << 7 << "a" << 1 << "b" << 2);
+    auto out = makeReplacementOplogEntry(in);
+    ASSERT_BSONOBJ_BINARY_EQ(in, out);
+}
+
+TEST(UpdateOplogSerializationTest, MakeReplacementOplogEntryNoopWhenIdMissing) {
+    auto in = BSON("a" << 1 << "b" << 2);
+    auto out = makeReplacementOplogEntry(in);
+    ASSERT_BSONOBJ_BINARY_EQ(in, out);
+}
+
+TEST(UpdateOplogSerializationTest, MakeReplacementOplogEntryEmpty) {
+    auto out = makeReplacementOplogEntry(BSONObj());
+    ASSERT_BSONOBJ_BINARY_EQ(BSONObj(), out);
+}
+
 TEST(UpdateOplogSerializationTest, ReadV2Entry) {
     auto v2Entry = fromjson(
         "{d: {deletedField1: false, deletedField2: false}, u: {updatedField: 'foo'}, i: "
