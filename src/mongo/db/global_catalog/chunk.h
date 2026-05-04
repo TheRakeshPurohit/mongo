@@ -128,10 +128,7 @@ public:
     // computed by, say, hashing a given field or projecting to a subset of fields).
     bool containsKey(const BSONObj& shardKey) const;
 
-    /**
-     * Marks this chunk as jumbo. Only moves from false to true once and is used by the balancer.
-     */
-    void markAsJumbo();
+    void setJumbo(bool jumbo);
 
 private:
     // IMPORTANT: The order of the members here matters,
@@ -212,11 +209,8 @@ public:
         return _chunkInfo.containsKey(shardKey);
     }
 
-    /**
-     * Marks this chunk as jumbo. Only moves from false to true once and is used by the balancer.
-     */
-    void markAsJumbo() {
-        _chunkInfo.markAsJumbo();
+    void setJumbo(bool jumbo) {
+        _chunkInfo.setJumbo(jumbo);
     }
 
 private:

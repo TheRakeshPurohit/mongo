@@ -138,8 +138,8 @@ BSONObj ChunkInfo::toBSON() const {
     return bob.obj();
 }
 
-void ChunkInfo::markAsJumbo() {
-    _jumbo.store(true);
+void ChunkInfo::setJumbo(bool jumbo) {
+    _jumbo.store(jumbo);
 }
 
 void Chunk::throwIfMoved() const {

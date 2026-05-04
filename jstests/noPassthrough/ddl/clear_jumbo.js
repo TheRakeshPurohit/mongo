@@ -1,6 +1,6 @@
-// requires_fcv_61 since the balancer in v6.0 is still working on the number of chunks,
-// hence the balancer is not triggered and the chunk is not marked as jumbo
-// @tags: [requires_fcv_61]
+/**
+ * Tests that the clearJumboFlag command works correctly.
+ */
 
 // Cannot run the filtering metadata check on tests that run clearJumboFlag.
 TestData.skipCheckShardFilteringMetadata = true;
@@ -68,11 +68,11 @@ jumboChunk = findChunksUtil.findOneChunkByNs(configDB, testNs, {min: {x: 0}});
 assert(jumboChunk.jumbo, tojson(jumboChunk));
 assert.eq(jumboMajorVersionBefore, jumboChunk.lastmod.getTime());
 
-// Target real jumbo chunk should bump version.
+// Target real jumbo chunk should clear the flag without bumping the placement version.
 assert.commandWorked(adminDB.runCommand({clearJumboFlag: testNs, find: {x: 1}}));
 jumboChunk = findChunksUtil.findOneChunkByNs(configDB, testNs, {min: {x: 0}});
 assert(!jumboChunk.jumbo, tojson(jumboChunk));
-assert.lt(jumboMajorVersionBefore, jumboChunk.lastmod.getTime());
+assert.eq(jumboMajorVersionBefore, jumboChunk.lastmod.getTime());
 
 // Delete all documents
 assert.commandWorked(testColl.deleteMany({x: 0}));
@@ -98,11 +98,11 @@ jumboChunk = findChunksUtil.findOneChunkByNs(configDB, testNs, {min: {x: 0}});
 assert(jumboChunk.jumbo, tojson(jumboChunk));
 assert.eq(jumboMajorVersionBefore, jumboChunk.lastmod.getTime());
 
-// Target real jumbo chunk should bump version.
+// Target real jumbo chunk should clear the flag without bumping the placement version.
 assert.commandWorked(adminDB.runCommand({clearJumboFlag: testNs, bounds: [jumboChunk.min, jumboChunk.max]}));
 jumboChunk = findChunksUtil.findOneChunkByNs(configDB, testNs, {min: {x: 0}});
 assert(!jumboChunk.jumbo, tojson(jumboChunk));
-assert.lt(jumboMajorVersionBefore, jumboChunk.lastmod.getTime());
+assert.eq(jumboMajorVersionBefore, jumboChunk.lastmod.getTime());
 
 // Ensure clear jumbo flag stores the correct chunk version
 assert.eq(undefined, jumboChunk.lastmodEpoch);

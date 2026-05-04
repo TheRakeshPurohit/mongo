@@ -60,7 +60,7 @@ public:
     }
 
     ChunkRange nonJumboChunk() {
-        return ChunkRange(BSON("x" << 0), BSON("x" << BSONType::maxKey));
+        return ChunkRange(BSON("x" << 0), BSON("x" << MAXKEY));
     }
 
 protected:
@@ -101,7 +101,7 @@ protected:
         NamespaceString::createNamespaceString_forTest("TestDB.TestColl2");
 };
 
-TEST_F(ClearJumboFlagTest, ClearJumboShouldBumpVersion) {
+TEST_F(ClearJumboFlagTest, ClearJumboShouldNotBumpVersion) {
     auto test = [&](const NamespaceString& nss, const Timestamp& collTimestamp) {
         const auto collUuid = UUID::gen();
         const auto collEpoch = OID::gen();
@@ -113,8 +113,9 @@ TEST_F(ClearJumboFlagTest, ClearJumboShouldBumpVersion) {
         auto chunkDoc = uassertStatusOK(getChunkDoc(
             operationContext(), collUuid, jumboChunk().getMin(), collEpoch, collTimestamp));
         ASSERT_FALSE(chunkDoc.getJumbo());
-        auto chunkVersion = chunkDoc.getVersion();
-        ASSERT_EQ(ChunkVersion({collEpoch, collTimestamp}, {15, 0}), chunkVersion);
+        // The persisted chunk version stays at the original {12, 7} — the clear is observed via
+        // the in-memory routing cache, not via a placement-version bump.
+        ASSERT_EQ(ChunkVersion({collEpoch, collTimestamp}, {12, 7}), chunkDoc.getVersion());
     };
 
     test(_nss2, Timestamp(42));

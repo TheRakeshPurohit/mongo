@@ -1950,8 +1950,10 @@ void ShardingCatalogManager::clearJumboFlag(OperationContext* opCtx,
     // under the exclusive _kChunkOpLock happen on the same term.
     opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
 
-    // Take _kChunkOpLock in exclusive mode to prevent concurrent chunk modifications and generate
-    // strictly monotonously increasing collection placement versions
+    auto cm = uassertStatusOK(
+        RoutingInformationCache::get(opCtx)->getCollectionPlacementInfoWithRefresh(opCtx, nss));
+
+    // Take _kChunkOpLock in exclusive mode to serialise with concurrent chunk modifications.
     Lock::ExclusiveLock lk(opCtx, _kChunkOpLock);
 
     auto findCollResponse = uassertStatusOK(_localConfigShard->exhaustiveFindOnConfig(
@@ -1967,6 +1969,18 @@ void ShardingCatalogManager::clearJumboFlag(OperationContext* opCtx,
             "Collection does not exist",
             !findCollResponse.docs.empty());
     const CollectionType coll(findCollResponse.docs[0]);
+
+    // Check that current collection epoch and timestamp still matches the one sent by the shard.
+    // This is to spot scenarios in which the collection have been dropped and recreated or had its
+    // shard key refined since the migration began.
+    uassert(StaleEpochInfo(nss),
+            str::stream() << "The epoch of collection '" << nss.toStringForErrorMsg()
+                          << "' has changed. The config server's collection placement version "
+                             "epoch is now '"
+                          << coll.getEpoch().toString() << "', but the request's is "
+                          << collectionEpoch.toString() << "'. Aborting clear jumbo on chunk ("
+                          << chunk.toString() << ").",
+            coll.getEpoch() == collectionEpoch);
 
     BSONObj targetChunkQuery =
         BSON(ChunkType::min(chunk.getMin())
@@ -1994,63 +2008,33 @@ void ShardingCatalogManager::clearJumboFlag(OperationContext* opCtx,
         return;
     }
 
-    const auto allChunksQuery = BSON(ChunkType::collectionUUID << coll.getUuid());
-
-    // Must use local read concern because we will perform subsequent writes.
-    auto findResponse = uassertStatusOK(_localConfigShard->exhaustiveFindOnConfig(
-        opCtx,
-        ReadPreferenceSetting{ReadPreference::PrimaryOnly},
-        repl::ReadConcernLevel::kLocalReadConcern,
-        NamespaceString::kConfigsvrChunksNamespace,
-        allChunksQuery,
-        BSON(ChunkType::lastmod << -1),
-        1));
-
-    const auto chunksVector = std::move(findResponse.docs);
-    uassert(ErrorCodes::IncompatibleShardingMetadata,
-            str::stream() << "Tried to find max chunk version for collection '"
-                          << nss.toStringForErrorMsg() << ", but found no chunks",
-            !chunksVector.empty());
-
-    const auto highestVersionChunk = uassertStatusOK(
-        ChunkType::parseFromConfigBSON(chunksVector.front(), coll.getEpoch(), coll.getTimestamp()));
-    const auto currentCollectionPlacementVersion = highestVersionChunk.getVersion();
-
-    // Check that current collection epoch and timestamp still matches the one sent by the shard.
-    // This is to spot scenarios in which the collection have been dropped and recreated or had its
-    // shard key refined since the migration began.
-    uassert(StaleEpochInfo(nss),
-            str::stream() << "The epoch of collection '" << nss.toStringForErrorMsg()
-                          << "' has changed since the migration began. The config server's "
-                             "collection placement version epoch is now '"
-                          << currentCollectionPlacementVersion.epoch().toString()
-                          << "', but the shard's is " << collectionEpoch.toString()
-                          << "'. Aborting clear jumbo on chunk (" << chunk.toString() << ").",
-            currentCollectionPlacementVersion.epoch() == collectionEpoch);
-
-    ChunkVersion newVersion({currentCollectionPlacementVersion.epoch(),
-                             currentCollectionPlacementVersion.getTimestamp()},
-                            {currentCollectionPlacementVersion.majorVersion() + 1, 0});
+    // Best-effort update of the in-memory routing cache so the balancer's next iteration observes
+    // the cleared flag without waiting for a refresh. This mirrors the asymmetric pattern used by
+    // splitOrMarkJumbo when it sets the flag: the persisted write below intentionally does not
+    // bump the chunk version, so an incremental routing-cache refresh would not pick up the
+    // change. The balancer is the only consumer of the jumbo flag, so updating the configsvr's
+    // own routing entry in place is sufficient. Stale jumbo:true entries on mongos and shard
+    // routing caches are benign because no router or shard reads the field for routing or
+    // filtering decisions. If the cache cannot be obtained or doesn't contain the chunk, the
+    // persisted write below is still correct; the balancer will observe the change on its next
+    // refresh.
+    if (cm.isSharded()) {
+        auto inMemoryChunk = cm.findIntersectingChunkWithSimpleCollation(chunk.getMin());
+        if (inMemoryChunk.getMin().woCompare(chunk.getMin()) == 0 &&
+            inMemoryChunk.getMax().woCompare(chunk.getMax()) == 0) {
+            inMemoryChunk.setJumbo(false);
+        }
+    }
 
     BSONObj chunkQuery(BSON(ChunkType::min(chunk.getMin())
                             << ChunkType::max(chunk.getMax()) << ChunkType::collectionUUID
                             << coll.getUuid()));
 
-    BSONObjBuilder updateBuilder;
-    updateBuilder.append("$unset", BSON(ChunkType::jumbo() << ""));
-
-    // Update the newest chunk to have the new (bumped) version
-    BSONObjBuilder updateVersionClause(updateBuilder.subobjStart("$set"));
-    updateVersionClause.appendTimestamp(ChunkType::lastmod(), newVersion.toLong());
-    updateVersionClause.doneFast();
-
-    auto chunkUpdate = updateBuilder.obj();
-
     auto didUpdate = uassertStatusOK(
         _localCatalogClient->updateConfigDocument(opCtx,
                                                   NamespaceString::kConfigsvrChunksNamespace,
                                                   chunkQuery,
-                                                  chunkUpdate,
+                                                  BSON("$unset" << BSON(ChunkType::jumbo() << "")),
                                                   false /* upsert */,
                                                   kNoWaitWriteConcern));
 
@@ -2302,7 +2286,6 @@ void ShardingCatalogManager::splitOrMarkJumbo(OperationContext* opCtx,
 
         if (splitPoints.empty()) {
             LOGV2(21873, "Marking chunk as jumbo", "chunk"_attr = redact(chunk.toString()));
-            chunk.markAsJumbo();
 
             // Take _kChunkOpLock in exclusive mode to prevent concurrent chunk modifications. Note
             // that the operation below doesn't increment the chunk marked as jumbo's version, which
@@ -2324,6 +2307,16 @@ void ShardingCatalogManager::splitOrMarkJumbo(OperationContext* opCtx,
                     "Collection does not exist",
                     !findCollResponse.docs.empty());
             const CollectionType coll(findCollResponse.docs[0]);
+
+            // Best-effort update of the in-memory routing cache so the balancer's next iteration
+            // observes the flag update without waiting for a refresh.
+            // The persisted write below intentionally does not bump the chunk version, so an
+            // incremental routing-cache refresh would not pick up the change. The balancer is the
+            // only consumer of the jumbo flag, so updating the configsvr's own routing entry in
+            // place is sufficient.
+            // If the cache cannot be obtained or doesn't contain the chunk, the persisted write
+            // below is still correct; the balancer will observe the change on its next refresh.
+            chunk.setJumbo(true);
 
             const auto chunkQuery = BSON(ChunkType::collectionUUID()
                                          << coll.getUuid() << ChunkType::min(chunk.getMin()));
