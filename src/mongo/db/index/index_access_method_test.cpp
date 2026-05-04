@@ -52,9 +52,13 @@
 #include "mongo/db/shard_role/transaction_resources.h"
 #include "mongo/db/storage/key_string/key_string.h"
 #include "mongo/unittest/unittest.h"
+#include "mongo/util/assert_util.h"
 
 #include <cstdint>
 #include <utility>
+
+#include <boost/none.hpp>
+#include <boost/optional/optional.hpp>
 
 namespace mongo {
 
@@ -362,6 +366,54 @@ TEST_F(IndexAccessMethodUpdateKeys, UpdateWhenPrepareUnique) {
     ASSERT_EQ(numDeleted, 0);
     ASSERT_EQ(SortedDataIndexAccessMethod::getDuplicateKeyErrors_forTest(),
               initDuplicateKeyErrors + 1);
+}
+
+class IndexAccessMethodBulkBuilder : public ServiceContextMongoDTest {};
+
+TEST_F(IndexAccessMethodBulkBuilder, CommitRejectsZeroInterval) {
+    ServiceContext::UniqueOperationContext opCtxRaii = cc().makeOperationContext();
+    OperationContext* opCtx = opCtxRaii.get();
+    NamespaceString nss =
+        NamespaceString::createNamespaceString_forTest("unittests.CommitRejectsZeroInterval");
+    auto indexName = "a_1";
+    auto indexSpec = BSON("name" << indexName << "key" << BSON("a" << 1) << "v"
+                                 << static_cast<int>(IndexDescriptor::IndexVersion::kV2));
+    ASSERT_OK(createIndexFromSpec(opCtx, nss.ns_forTest(), indexSpec));
+
+    AutoGetCollection autoColl(opCtx, nss, LockMode::MODE_X);
+    const auto& coll = *autoColl;
+    auto indexEntry = coll->getIndexCatalog()->findIndexByName(opCtx, indexName);
+    auto indexAccessMethod = indexEntry->accessMethod()->asSortedData();
+
+    auto bulk = indexAccessMethod->initiateBulk(opCtx,
+                                                coll,
+                                                indexEntry,
+                                                /*spiller=*/nullptr,
+                                                /*maxMemoryUsageBytes=*/128 * 1024 * 1024,
+                                                /*stateInfo=*/boost::none,
+                                                nss.dbName(),
+                                                ContainerWriteBehavior::kDoNotReplicate);
+    ASSERT(bulk);
+
+    auto& ru = *shard_role_details::getRecoveryUnit(opCtx);
+    ASSERT_THROWS_CODE(bulk->commit(opCtx,
+                                    ru,
+                                    &coll,
+                                    indexEntry,
+                                    /*dupsAllowed=*/true,
+                                    /*yieldIterations=*/0,
+                                    IndexAccessMethod::KeyHandlerFn{
+                                        [](const CollectionPtr&, const key_string::View&) {
+                                            return Status::OK();
+                                        }},
+                                    IndexAccessMethod::RecordIdHandlerFn{},
+                                    IndexAccessMethod::YieldFn{},
+                                    IndexAccessMethod::OnNKeysLoadedFn{[]() {}},
+                                    /*onNKeysLoadedFnInterval=*/0,
+                                    /*keyBatchSize=*/1,
+                                    /*keyBatchBytes=*/1024),
+                       DBException,
+                       ErrorCodes::BadValue);
 }
 
 }  // namespace

@@ -929,6 +929,7 @@ public:
     using Data = std::pair<key_string::Value, mongo::NullValue>;
     using Iterator = sorter::Iterator<key_string::Value, mongo::NullValue>;
     using KeyHandlerFn = IndexAccessMethod::KeyHandlerFn;
+    using OnNKeysLoadedFn = IndexAccessMethod::OnNKeysLoadedFn;
     using OnSuppressedErrorFn = IndexAccessMethod::OnSuppressedErrorFn;
     using RecordIdHandlerFn = IndexAccessMethod::RecordIdHandlerFn;
     using ShouldRelaxConstraintsFn = IndexAccessMethod::ShouldRelaxConstraintsFn;
@@ -972,6 +973,8 @@ public:
                   const KeyHandlerFn& onDuplicateKeyInserted,
                   const RecordIdHandlerFn& onDuplicateRecord,
                   const YieldFn& yieldFn,
+                  const OnNKeysLoadedFn& onNKeysLoaded,
+                  int64_t onNKeysLoadedFnInterval,
                   size_t keyBatchSize,
                   size_t keyBatchBytes) final;
 
@@ -1217,8 +1220,12 @@ Status BulkBuilderImpl::commit(OperationContext* opCtx,
                                const KeyHandlerFn& onDuplicateKeyInserted,
                                const RecordIdHandlerFn& onDuplicateRecord,
                                const YieldFn& yieldFn,
+                               const OnNKeysLoadedFn& onNKeysLoaded,
+                               const int64_t onNKeysLoadedFnInterval,
                                const size_t keyBatchSize,
                                const size_t keyBatchBytes) {
+    uassert(
+        ErrorCodes::BadValue, "onNKeysLoadedFnInterval must be >= 1", onNKeysLoadedFnInterval >= 1);
     Timer timer;
 
     _ns = entry->getNSSFromCatalog(opCtx);
@@ -1241,6 +1248,7 @@ Status BulkBuilderImpl::commit(OperationContext* opCtx,
 
     std::vector<key_string::Value> batch;
     size_t bytesInBatch = 0;
+    int64_t nKeys = 0;
 
     auto commitBatch = [&]() {
         if (batch.empty()) {
@@ -1254,8 +1262,13 @@ Status BulkBuilderImpl::commit(OperationContext* opCtx,
             }
             wunit.commit();
         });
+        nKeys += batch.size();
         batch.clear();
         bytesInBatch = 0;
+        if (nKeys >= onNKeysLoadedFnInterval) {
+            onNKeysLoaded();
+            nKeys = 0;
+        }
     };
     ON_BLOCK_EXIT([&] { commitBatch(); });
 

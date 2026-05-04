@@ -1187,6 +1187,8 @@ Status MultiIndexBlock::dumpInsertsFromBulk(
                             opCtx, indexIdent, IndexCatalog::InclusionPolicy::kUnfinished)};
             };
 
+            const bool periodicResumeStateWrites =
+                _isResumable && _containerWriteBehavior == ContainerWriteBehavior::kReplicate;
             Status status = _indexes[i].bulk->commit(
                 opCtx,
                 *shard_role_details::getRecoveryUnit(opCtx),
@@ -1214,6 +1216,10 @@ Status MultiIndexBlock::dumpInsertsFromBulk(
                 },
                 onDuplicateRecord,
                 yieldFn,
+                periodicResumeStateWrites ? IndexAccessMethod::OnNKeysLoadedFn(
+                                                [this, opCtx] { _writeStateToContainer(opCtx); })
+                                          : IndexAccessMethod::OnNKeysLoadedFn([]() {}),
+                primaryDrivenIndexBuildLoadResumeStateWriteIntervalKeys.load(),
                 (this->_containerWriteBehavior == ContainerWriteBehavior::kReplicate)
                     ? primaryDrivenIndexBuildIndexInsertionBatchSize.load()
                     : 1,

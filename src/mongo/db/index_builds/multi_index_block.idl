@@ -137,6 +137,18 @@ server_parameters:
             gte: 1
         redact: false
 
+    primaryDrivenIndexBuildLoadResumeStateWriteIntervalKeys:
+        description: "How often the resume state is persisted based on the number of keys loaded into the index during the load phase."
+        set_at:
+            - runtime
+            - startup
+        cpp_varname: primaryDrivenIndexBuildLoadResumeStateWriteIntervalKeys
+        cpp_vartype: AtomicWord<long long>
+        default: 1000000
+        validator:
+            gte: 1
+        redact: false
+
     indexBuildSpillingMinAvailableDiskSpaceBytes:
         description: "Minimum disk space that should be available before spilling for an index build"
         set_at: [startup, runtime]

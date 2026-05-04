@@ -244,6 +244,8 @@ public:
     // Bulk operations support
     //
 
+    using OnNKeysLoadedFn = std::function<void()>;
+
     class MONGO_MOD_OPEN BulkBuilder {
     public:
         virtual ~BulkBuilder() = default;
@@ -272,6 +274,10 @@ public:
          * duplicate keys.
          * @param yieldFn - A function to invoke to request a yield and then restore. It returns the
          * new CollectionPtr* and IndexCatalogEntry* entry that shall be used from this point on.
+         * @param onNKeysLoaded - Called every onNKeysLoadedFnInterval committed
+         * keys. Pass a no-op if periodic resume-state writes are not needed.
+         * @param onNKeysLoadedFnInterval - The number of committed keys between invocations of
+         * onNKeysLoaded. Must be >= 1.
          * @param keyBatchSize -  The maximum number of index keys that will be batched together
          * into a single storage transaction.
          * @param keyBatchBytes - The maximum number of bytes that will be batched together into a
@@ -286,6 +292,8 @@ public:
                               const KeyHandlerFn& onDuplicateKeyInserted,
                               const RecordIdHandlerFn& onDuplicateRecord,
                               const YieldFn& yieldFn,
+                              const OnNKeysLoadedFn& onNKeysLoaded,
+                              int64_t onNKeysLoadedFnInterval,
                               size_t keyBatchSize,
                               size_t keyBatchBytes) = 0;
 
