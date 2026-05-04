@@ -492,6 +492,27 @@ bool isUnshardCollection(const boost::optional<ReshardingProvenanceEnum>& proven
 bool isRewriteCollection(const boost::optional<ReshardingProvenanceEnum>& provenance);
 
 /**
+ * Returns the final shard key for the operation:
+ *   - kRewriteCollection: always returns the existing source key.
+ *   - kReshardCollection on timeseries: translates userKey from user-facing field to bucket-level.
+ *   - Everything else: returns userKey unchanged.
+ */
+BSONObj computeReshardingShardKey(
+    const boost::optional<ReshardingProvenanceEnum>& provenance,
+    const ShardKeyPattern& sourceShardKey,
+    const boost::optional<TypeCollectionTimeseriesFields>& timeseriesFields,
+    const boost::optional<BSONObj>& userKey);
+
+/**
+ * Validates source collection sharding state for the given provenance.
+ */
+void validateReshardCollectionRequest(const boost::optional<ReshardingProvenanceEnum>& provenance,
+                                      bool sourceIsSharded,
+                                      const ShardKeyPattern& sourceShardKey,
+                                      const BSONObj& finalShardKey,
+                                      bool forceRedistribution);
+
+/**
  * Helper function to create a thread pool for _markKilledExecutor member of resharding POS.
  */
 std::shared_ptr<ThreadPool> makeThreadPoolForMarkKilledExecutor(const std::string& poolName);

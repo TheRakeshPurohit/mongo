@@ -1129,10 +1129,12 @@ mongo_cc_unit_test(
 mongo_cc_unit_test(
     name = "db_s_config_server_part2_test",
     srcs = [
+        "//src/mongo/db/s/resharding:reshard_collection_coordinator_test.cpp",
         "//src/mongo/db/s/resharding:resharding_coordinator_commit_monitor_test.cpp",
         "//src/mongo/db/s/resharding:resharding_coordinator_dao_test.cpp",
         "//src/mongo/db/s/resharding:resharding_coordinator_observer_test.cpp",
         "//src/mongo/db/s/resharding:resharding_coordinator_service_external_state_test.cpp",
+        "//src/mongo/db/s/resharding:resharding_coordinator_service_provenance_test.cpp",
         "//src/mongo/db/s/resharding:resharding_coordinator_service_test.cpp",
         "//src/mongo/db/s/resharding:resharding_coordinator_service_util_test.cpp",
         "//src/mongo/db/s/resharding:resharding_coordinator_test.cpp",

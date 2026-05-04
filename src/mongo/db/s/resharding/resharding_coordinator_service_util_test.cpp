@@ -39,6 +39,9 @@
 #include "mongo/otel/traces/span/span.h"
 #include "mongo/otel/traces/telemetry_context_serialization.h"
 #include "mongo/unittest/unittest.h"
+
+#include <gtest/gtest.h>
+
 namespace mongo {
 namespace resharding {
 
@@ -322,6 +325,101 @@ TEST_F(ReshardingCoordinatorServiceUtilTest, RegistryPathReturnsReshardingUUID) 
         LocalReshardingOperationsRegistry::Role::kCoordinator, meta);
 
     ASSERT_EQ(retrieveReshardingUUID(opCtx.get(), kSourceNss), reshardingUUID);
+}
+
+/**
+ * Parameterized fixture exercising the per-provenance behavior of
+ * createReshardingFieldsUpdateForOriginalNss and createTempReshardingCollectionType.
+ */
+class ReshardingCoordinatorServiceUtilProvenanceTest
+    : public ReshardingCoordinatorServiceUtilTest,
+      public ::testing::WithParamInterface<ReshardingProvenanceEnum> {
+protected:
+    ReshardingCoordinatorDocument makeCoordinatorDocWithProvenance(CoordinatorStateEnum state) {
+        ReshardingCoordinatorDocument doc;
+        auto metadata = makeMetadata();
+        metadata.setStartTime(Date_t::now());
+        metadata.setProvenance(GetParam());
+        doc.setCommonReshardingMetadata(std::move(metadata));
+        doc.setState(state);
+
+        DonorShardContext donorCtx;
+        donorCtx.setState(DonorStateEnum::kPreparingToDonate);
+        doc.setDonorShards({DonorShardEntry(ShardId("donor0"), donorCtx)});
+
+        RecipientShardContext recipientCtx;
+        recipientCtx.setState(RecipientStateEnum::kUnused);
+        doc.setRecipientShards({RecipientShardEntry(ShardId("recipient0"), recipientCtx)});
+
+        return doc;
+    }
+};
+
+INSTANTIATE_TEST_SUITE_P(Provenance,
+                         ReshardingCoordinatorServiceUtilProvenanceTest,
+                         ::testing::Values(ReshardingProvenanceEnum::kReshardCollection,
+                                           ReshardingProvenanceEnum::kMoveCollection,
+                                           ReshardingProvenanceEnum::kUnshardCollection,
+                                           ReshardingProvenanceEnum::kRewriteCollection),
+                         [](const ::testing::TestParamInfo<ReshardingProvenanceEnum>& info) {
+                             return std::string(idl::serialize(info.param));
+                         });
+
+TEST_P(ReshardingCoordinatorServiceUtilProvenanceTest,
+       CollectionUpdateAtCommitSetsUnsplittableForUnshardOnly) {
+    auto opCtx = makeOperationContext();
+    auto doc = makeCoordinatorDocWithProvenance(CoordinatorStateEnum::kCommitting);
+
+    auto update =
+        createReshardingFieldsUpdateForOriginalNss(opCtx.get(), doc, OID::gen(), Timestamp(1, 2));
+    auto setFields = update.getObjectField("$set");
+
+    if (isUnshardCollection(GetParam())) {
+        ASSERT_TRUE(setFields.hasField("unsplittable"));
+        ASSERT_TRUE(setFields["unsplittable"].Bool());
+    } else {
+        ASSERT_FALSE(setFields.hasField("unsplittable"));
+    }
+}
+
+TEST_P(ReshardingCoordinatorServiceUtilProvenanceTest,
+       TempCollectionBlocksMigrationsForReshardAndRewriteOnly) {
+    auto opCtx = makeOperationContext();
+    auto doc = makeCoordinatorDocWithProvenance(CoordinatorStateEnum::kPreparingToDonate);
+    ChunkVersion chunkVersion(CollectionGeneration{OID::gen(), Timestamp(5, 0)},
+                              CollectionPlacement(10, 1));
+
+    auto collType = createTempReshardingCollectionType(
+        opCtx.get(), doc, chunkVersion, BSONObj() /* collation */, boost::none);
+
+    const bool expectMigrationsBlocked =
+        isOrdinaryReshardCollection(GetParam()) || isRewriteCollection(GetParam());
+    ASSERT_EQ(collType.getAllowMigrations(), !expectMigrationsBlocked);
+}
+
+TEST_P(ReshardingCoordinatorServiceUtilProvenanceTest,
+       CollectionUpdateAtInitializingCopiesProvenance) {
+    auto opCtx = makeOperationContext();
+    auto doc = makeCoordinatorDocWithProvenance(CoordinatorStateEnum::kInitializing);
+
+    auto update =
+        createReshardingFieldsUpdateForOriginalNss(opCtx.get(), doc, boost::none, boost::none);
+
+    auto reshardingFields = update.getObjectField("$set").getObjectField("reshardingFields");
+    ASSERT_EQ(reshardingFields.getStringField("provenance"), idl::serialize(GetParam()));
+}
+
+TEST_P(ReshardingCoordinatorServiceUtilProvenanceTest, TempCollectionTypeCopiesProvenance) {
+    auto opCtx = makeOperationContext();
+    auto doc = makeCoordinatorDocWithProvenance(CoordinatorStateEnum::kPreparingToDonate);
+    ChunkVersion chunkVersion(CollectionGeneration{OID::gen(), Timestamp(5, 0)},
+                              CollectionPlacement(10, 1));
+
+    auto collType =
+        createTempReshardingCollectionType(opCtx.get(), doc, chunkVersion, BSONObj(), boost::none);
+
+    ASSERT_TRUE(collType.getReshardingFields().has_value());
+    ASSERT_EQ(collType.getReshardingFields()->getProvenance(), GetParam());
 }
 
 }  // namespace resharding

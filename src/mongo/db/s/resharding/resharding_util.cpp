@@ -528,6 +528,57 @@ bool isOrdinaryReshardCollection(const boost::optional<ReshardingProvenanceEnum>
     return provenance && provenance.get() == ReshardingProvenanceEnum::kReshardCollection;
 }
 
+BSONObj computeReshardingShardKey(
+    const boost::optional<ReshardingProvenanceEnum>& provenance,
+    const ShardKeyPattern& sourceShardKey,
+    const boost::optional<TypeCollectionTimeseriesFields>& timeseriesFields,
+    const boost::optional<BSONObj>& userKey) {
+    if (isRewriteCollection(provenance)) {
+        // rewriteCollection reshards the collection on its existing key.
+        return sourceShardKey.getKeyPattern().toBSON();
+    }
+
+    uassert(
+        ErrorCodes::InvalidOptions, "Resharding operation requires shard key", userKey.has_value());
+
+    if (timeseriesFields && isOrdinaryReshardCollection(provenance)) {
+        return shardkeyutil::validateAndTranslateTimeseriesShardKey(
+            timeseriesFields->getTimeseriesOptions(), *userKey);
+    }
+
+    return *userKey;
+}
+
+void validateReshardCollectionRequest(const boost::optional<ReshardingProvenanceEnum>& provenance,
+                                      bool sourceIsSharded,
+                                      const ShardKeyPattern& sourceShardKey,
+                                      const BSONObj& finalShardKey,
+                                      bool forceRedistribution) {
+    if (isMoveCollection(provenance)) {
+        uassert(ErrorCodes::NamespaceNotFound,
+                "MoveCollection can only be called on an unsharded collection.",
+                !sourceIsSharded);
+        return;
+    }
+
+    if (isUnshardCollection(provenance)) {
+        // Skip: unshardCollection is validated later in the resharding flow.
+        return;
+    }
+
+    uassert(ErrorCodes::NamespaceNotSharded,
+            "Collection has to be a sharded collection.",
+            sourceIsSharded);
+
+    if (forceRedistribution) {
+        uassert(ErrorCodes::InvalidOptions,
+                "The new shard key must be the same as the original shard key when using the "
+                "forceRedistribution option. The forceRedistribution option is meant for "
+                "redistributing the collection to a different set of shards.",
+                sourceShardKey.isShardKey(finalShardKey));
+    }
+}
+
 std::shared_ptr<ThreadPool> makeThreadPoolForMarkKilledExecutor(const std::string& poolName) {
     return std::make_shared<ThreadPool>([&] {
         ThreadPool::Options options;

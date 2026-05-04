@@ -114,18 +114,10 @@ void ReshardCollectionCoordinator::appendCommandInfo(BSONObjBuilder* cmdInfoBuil
 }
 
 BSONObj ReshardCollectionCoordinator::_computeFinalShardKey(const CurrentChunkManager& cmOld) {
-    auto provenance = _doc.getProvenance();
-    if (resharding::isRewriteCollection(provenance)) {
-        // rewriteCollection reshards the collection on its existing key.
-        return cmOld.getShardKeyPattern().getKeyPattern().toBSON();
-    }
-
-    if (cmOld.isTimeseriesCollection() && resharding::isOrdinaryReshardCollection(provenance)) {
-        const auto& tsOptions = cmOld.getTimeseriesFields().get().getTimeseriesOptions();
-        return shardkeyutil::validateAndTranslateTimeseriesShardKey(tsOptions, *_doc.getKey());
-    }
-
-    return *_doc.getKey();
+    return resharding::computeReshardingShardKey(_doc.getProvenance(),
+                                                 cmOld.getShardKeyPattern(),
+                                                 cmOld.getTimeseriesFields(),
+                                                 _doc.getKey());
 }
 
 ExecutorFuture<void> ReshardCollectionCoordinator::_runImpl(
@@ -201,35 +193,21 @@ ExecutorFuture<void> ReshardCollectionCoordinator::_runImpl(
             configsvrReshardCollection.setPerformVerification(_doc.getPerformVerification());
 
             auto provenance = _doc.getProvenance();
-            if (resharding::isMoveCollection(provenance)) {
-                uassert(ErrorCodes::NamespaceNotFound,
-                        str::stream()
-                            << "MoveCollection can only be called on an unsharded collection.",
-                        !cmOld.isSharded());
-            } else if (resharding::isUnshardCollection(provenance)) {
-                // Pick the "to" shard if the client did not specify one.
-                if (!_doc.getShardDistribution()) {
-                    auto toShard = sharding_util::selectLeastLoadedNonDrainingShard(opCtx);
-                    mongo::ShardKeyRange destinationRange(toShard);
-                    destinationRange.setMin(cluster::unsplittable::kUnsplittableCollectionMinKey);
-                    destinationRange.setMax(cluster::unsplittable::kUnsplittableCollectionMaxKey);
-                    std::vector<mongo::ShardKeyRange> distribution = {destinationRange};
-                    configsvrReshardCollection.setShardDistribution(distribution);
-                }
-            } else {
-                uassert(ErrorCodes::NamespaceNotSharded,
-                        "Collection has to be a sharded collection.",
-                        cmOld.isSharded());
+            resharding::validateReshardCollectionRequest(
+                provenance,
+                cmOld.isSharded(),
+                cmOld.getShardKeyPattern(),
+                finalShardKey,
+                _doc.getForceRedistribution().value_or(false));
 
-                if (_doc.getForceRedistribution() && *_doc.getForceRedistribution()) {
-                    uassert(ErrorCodes::InvalidOptions,
-                            str::stream()
-                                << "The new shard key must be the same as the original shard key "
-                                   "when using the forceRedistribution option. The "
-                                   "forceRedistribution option is meant for redistributing the "
-                                   "collection to a different set of shards.",
-                            cmOld.getShardKeyPattern().isShardKey(finalShardKey));
-                }
+            // For unshardCollection, pick the destination shard if the client did not specify one.
+            if (resharding::isUnshardCollection(provenance) && !_doc.getShardDistribution()) {
+                auto toShard = sharding_util::selectLeastLoadedNonDrainingShard(opCtx);
+                mongo::ShardKeyRange destinationRange(toShard);
+                destinationRange.setMin(cluster::unsplittable::kUnsplittableCollectionMinKey);
+                destinationRange.setMax(cluster::unsplittable::kUnsplittableCollectionMaxKey);
+                std::vector<mongo::ShardKeyRange> distribution = {destinationRange};
+                configsvrReshardCollection.setShardDistribution(distribution);
             }
 
             configsvrReshardCollection.setProvenance(provenance);
