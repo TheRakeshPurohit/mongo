@@ -78,15 +78,20 @@ void incrementHistogramForUser(OperationContext* opCtx,
     incrementHistogram(opCtx, latency, histogram, readWriteType);
 }
 
-void updateCollectionData(WithLock,
-                          OperationContext* opCtx,
+void updateCollectionData(OperationContext* opCtx,
                           Top::CollectionData& c,
                           LogicalOp logicalOp,
                           Top::LockType lockType,
                           long long micros,
                           Command::ReadWriteType readWriteType) {
-    if (c.isStatsRecordingAllowed) {
-        c.isStatsRecordingAllowed = !CurOp::get(opCtx)->getShouldOmitDiagnosticInformation();
+    // isStatsRecordingAllowed is sticky-false: once any op observes
+    // shouldOmitDiagnosticInformation, it stays false. Concurrent writers all converge to false
+    // idempotently — there is no false→true transition, so a relaxed CAS-style
+    // read-then-conditional-store is safe.
+    if (c.isStatsRecordingAllowed.loadRelaxed()) {
+        if (CurOp::get(opCtx)->getShouldOmitDiagnosticInformation()) {
+            c.isStatsRecordingAllowed.storeRelaxed(false);
+        }
     }
 
     incrementHistogramForUser(opCtx, micros, c.opLatencyHistogram, readWriteType);
@@ -185,9 +190,9 @@ void Top::record(OperationContext* opCtx,
 
     auto hashedNs = UsageMap::hasher().hashed_key(nssStr);
     auto microsCount = durationCount<Microseconds>(micros);
-    std::lock_guard lk(_lockUsage);
-    CollectionData& coll = _usage[hashedNs];
-    updateCollectionData(lk, opCtx, coll, logicalOp, lockType, microsCount, readWriteType);
+    _withCollectionData(hashedNs, [&](CollectionData& coll) {
+        updateCollectionData(opCtx, coll, logicalOp, lockType, microsCount, readWriteType);
+    });
 }
 
 void Top::record(OperationContext* opCtx,
@@ -208,10 +213,33 @@ void Top::record(OperationContext* opCtx,
     }
 
     auto microsCount = durationCount<Microseconds>(micros);
-    std::lock_guard lk(_lockUsage);
-    for (const auto& hashedNs : hashedSet) {
-        CollectionData& coll = _usage[hashedNs];
-        updateCollectionData(lk, opCtx, coll, logicalOp, lockType, microsCount, readWriteType);
+
+    // Open-coded version of _withCollectionData so the shared lock is acquired once for
+    // the whole batch instead of per-namespace. Don't replace with per-key calls to the
+    // helper without re-benchmarking — N shared-lock acquires cost more than this loop.
+    std::vector<size_t> missing;
+    {
+        std::shared_lock lk(_lockUsage);  // NOLINT
+        for (size_t i = 0; i < hashedSet.size(); ++i) {
+            auto it = _usage.find(hashedSet[i]);
+            if (it != _usage.end()) {
+                updateCollectionData(
+                    opCtx, *it->second, logicalOp, lockType, microsCount, readWriteType);
+            } else {
+                missing.push_back(i);
+            }
+        }
+    }
+
+    if (!missing.empty()) {
+        std::lock_guard lk(_lockUsage);
+        for (auto idx : missing) {
+            auto& entry = _usage[hashedSet[idx]];
+            if (!entry) {
+                entry = std::make_unique<CollectionData>();
+            }
+            updateCollectionData(opCtx, *entry, logicalOp, lockType, microsCount, readWriteType);
+        }
     }
 }
 
@@ -223,8 +251,8 @@ void Top::collectionDropped(const NamespaceString& nss) {
 
 void Top::appendStatsEntry(BSONObjBuilder& b, StringData name, const UsageData& data) {
     BSONObjBuilder bb(b.subobjStart(name));
-    bb.appendNumber("time", data.time);
-    bb.appendNumber("count", data.count);
+    bb.appendNumber("time", data.time.loadRelaxed());
+    bb.appendNumber("count", data.count.loadRelaxed());
     bb.done();
 }
 
@@ -243,7 +271,7 @@ void Top::appendUsageStatsForCollection(BSONObjBuilder& result, const Collection
 }
 
 void Top::append(BSONObjBuilder& topStatsBuilder) {
-    std::lock_guard lk(_lockUsage);
+    std::shared_lock lk(_lockUsage);  // NOLINT
 
     // Pull all the names into a vector so we can sort them for the user.
     std::vector<std::string> names;
@@ -256,9 +284,9 @@ void Top::append(BSONObjBuilder& topStatsBuilder) {
     for (size_t i = 0; i < names.size(); i++) {
         BSONObjBuilder bb(topStatsBuilder.subobjStart(names[i]));
 
-        const CollectionData& coll = _usage.find(names[i])->second;
+        const CollectionData& coll = *_usage.find(names[i])->second;
         auto pos = names[i].find('.');
-        if (coll.isStatsRecordingAllowed &&
+        if (coll.isStatsRecordingAllowed.loadRelaxed() &&
             !NamespaceString::isFLE2StateCollection(names[i].substr(pos + 1))) {
             appendUsageStatsForCollection(topStatsBuilder, coll);
         }
@@ -271,29 +299,26 @@ void Top::appendLatencyStats(const NamespaceString& nss,
                              BSONObjBuilder* builder) {
     const auto nssStr = NamespaceStringUtil::serialize(nss, SerializationContext::stateDefault());
     auto hashedNs = UsageMap::hasher().hashed_key(nssStr);
-    std::lock_guard lk(_lockUsage);
-    BSONObjBuilder latencyStatsBuilder;
-    _usage[hashedNs].opLatencyHistogram.append(includeHistograms, false, &latencyStatsBuilder);
-    builder->append("ns", nssStr);
-    builder->append("latencyStats", latencyStatsBuilder.obj());
+    _withCollectionData(hashedNs, [&](const CollectionData& coll) {
+        BSONObjBuilder latencyStatsBuilder;
+        coll.opLatencyHistogram.append(includeHistograms, false, &latencyStatsBuilder);
+        builder->append("ns", nssStr);
+        builder->append("latencyStats", latencyStatsBuilder.obj());
+    });
 }
 
 void Top::appendOperationStats(const NamespaceString& nss, BSONObjBuilder* builder) {
     const auto nssStr = NamespaceStringUtil::serialize(nss, SerializationContext::stateDefault());
     auto hashedNs = UsageMap::hasher().hashed_key(nssStr);
-    std::lock_guard lk(_lockUsage);
-    BSONObjBuilder opStatsBuilder;
-
-    // Appends usage statistics to operationStats object.
-    const CollectionData& coll = _usage[hashedNs];
-    auto pos = nssStr.find('.');
-    if (coll.isStatsRecordingAllowed &&
-        !NamespaceString::isFLE2StateCollection(nssStr.substr(pos + 1))) {
-        appendUsageStatsForCollection(opStatsBuilder, coll);
-    }
-
-    // Appends operationStats BSONbuilder object to return output.
-    builder->append("ns", nssStr);
-    builder->append("operationStats", opStatsBuilder.obj());
+    _withCollectionData(hashedNs, [&](const CollectionData& coll) {
+        BSONObjBuilder opStatsBuilder;
+        auto pos = nssStr.find('.');
+        if (coll.isStatsRecordingAllowed.loadRelaxed() &&
+            !NamespaceString::isFLE2StateCollection(nssStr.substr(pos + 1))) {
+            appendUsageStatsForCollection(opStatsBuilder, coll);
+        }
+        builder->append("ns", nssStr);
+        builder->append("operationStats", opStatsBuilder.obj());
+    });
 }
 }  // namespace mongo

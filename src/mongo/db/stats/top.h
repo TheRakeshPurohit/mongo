@@ -39,6 +39,8 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/stats/operation_latency_histogram.h"
+#include "mongo/platform/atomic.h"
+#include "mongo/platform/compiler.h"
 #include "mongo/rpc/message.h"
 #include "mongo/util/modules.h"
 #include "mongo/util/observable_mutex.h"
@@ -46,7 +48,9 @@
 #include "mongo/util/string_map.h"
 
 #include <cstdint>
+#include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <span>
 
 #include <boost/date_time/posix_time/posix_time.hpp>
@@ -101,12 +105,12 @@ private:
 class MONGO_MOD_PUB Top {
 public:
     struct UsageData {
-        long long time{0};
-        long long count{0};
+        Atomic<long long> time{0};
+        Atomic<long long> count{0};
 
         void inc(long long micros) {
-            count++;
-            time += micros;
+            count.fetchAndAddRelaxed(1);
+            time.fetchAndAddRelaxed(micros);
         }
     };
 
@@ -123,9 +127,11 @@ public:
         UsageData remove;
         UsageData commands;
 
-        OperationLatencyHistogram opLatencyHistogram;
+        AtomicOperationLatencyHistogram opLatencyHistogram;
 
-        bool isStatsRecordingAllowed{true};
+        // Sticky: once any op sets this false, it stays false. See updateCollectionData()
+        // for why a relaxed read-then-conditional-store is safe.
+        Atomic<bool> isStatsRecordingAllowed{true};
     };
 
     enum class LockType {
@@ -134,7 +140,10 @@ public:
         NotLocked,
     };
 
-    typedef StringMap<CollectionData> UsageMap;
+    // CollectionData stores Atomic<T>s, which are non-movable. Use unique_ptr so the
+    // CollectionData heap allocation is stable across map rehashes (only the unique_ptr
+    // itself moves, not the atomics inside).
+    typedef StringMap<std::unique_ptr<CollectionData>> UsageMap;
 
     Top() {
         ObservableMutexRegistry::get().add("Top::_lockUsage", _lockUsage);
@@ -192,8 +201,33 @@ public:
     void appendOperationStats(const NamespaceString& nss, BSONObjBuilder* builder);
 
 private:
-    // _lockUsage should always be acquired before using _usage.
-    ObservableMutex<std::mutex> _lockUsage;
+    // Runs `fn(collectionData)` for the map entry keyed by `key`, taking a shared lock on
+    // the fast path and falling back to an exclusive lock to insert a new entry if missing.
+    // Always-inlined because this sits on the Top::record hot path; the lambda body must
+    // collapse into the caller so the shared_lock acquire/release fuses with the find()
+    // and updateCollectionData().
+    template <typename KeyT, typename Fn>
+    MONGO_COMPILER_ALWAYS_INLINE void _withCollectionData(const KeyT& key, Fn&& fn) {
+        {
+            std::shared_lock lk(_lockUsage);  // NOLINT
+            auto it = _usage.find(key);
+            if (it != _usage.end()) {
+                fn(*it->second);
+                return;
+            }
+        }
+        std::lock_guard lk(_lockUsage);
+        auto& entry = _usage[key];
+        if (!entry) {
+            entry = std::make_unique<CollectionData>();
+        }
+        fn(*entry);
+    }
+
+    // _lockUsage protects the _usage map structure. Shared lock for reads and updates
+    // to existing entries (atomic fields handle field-level safety). Exclusive lock
+    // only for inserting new collections or erasing entries.
+    ObservableSharedMutex _lockUsage;
     UsageMap _usage;
 };
 
