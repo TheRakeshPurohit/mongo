@@ -694,11 +694,6 @@ ssl_want SSLReadManager::decryptBuffer(asio::error_code& ec, DecryptState* pDecr
         const auto* const preCallInputPtr = static_cast<const uint8_t*>(_pInBuffer->data());
         const ULONG preCallInputLen = static_cast<ULONG>(_pInBuffer->size());
 
-        LOGV2_DEBUG(7998035,
-                    0,
-                    "TLS decryptBuffer: calling DecryptMessage",
-                    "inputBytes"_attr = preCallInputLen);
-
         std::array<SecBuffer, 4> securityBuffers;
         securityBuffers[0].cbBuffer = preCallInputLen;
         securityBuffers[0].BufferType = SECBUFFER_DATA;
