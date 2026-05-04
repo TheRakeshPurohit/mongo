@@ -177,6 +177,19 @@ Status splitChunk(OperationContext* opCtx,
         }
     }
 
+    // Because this is a non-authoritative update, we must mark the CSR metadata as
+    // kNonAuthoritative so that the following refresh will fetch the metadata from the
+    // config server. Leaving it kAuthoritative would short-circuit the refresh against the
+    // durable shard catalog and keep the CSR pinned to the pre-split version.
+    // This must be done before starting the operation to ensure the CSR is left as
+    // kNonAuthoritative in case of an unexpected failure.
+    // TODO (SERVER-125785) The clearFilteringMetadata_nonAuthoritative should go away once
+    // splitChunk becomes authoritative.
+    {
+        auto scopedCsr = CollectionShardingRuntime::acquireExclusive(opCtx, nss);
+        scopedCsr->clearFilteringMetadata_nonAuthoritative(opCtx);
+    }
+
     // Commit the split to the config server.
     auto request = SplitChunkRequest(nss,
                                      shardName,
@@ -209,6 +222,8 @@ Status splitChunk(OperationContext* opCtx,
         }
         return boost::none;
     }();
+
+    // Update the shard catalog filtering metadata to reflect the new shard version.
     uassertStatusOK(FilteringMetadataCache::get(opCtx)->onCollectionPlacementVersionMismatch(
         opCtx, nss, chunkVersionReceived));
 

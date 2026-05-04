@@ -95,7 +95,7 @@ public:
                     Grid::get(opCtx->getServiceContext())->getExecutorPool()->getFixedExecutor());
                 newOpCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
 
-                shard_catalog_commit::commitCreateCollectionLocally(newOpCtx.get(), ns());
+                shard_catalog_commit::commitCollectionMetadataLocally(newOpCtx.get(), ns());
             }
 
             LOGV2_INFO(

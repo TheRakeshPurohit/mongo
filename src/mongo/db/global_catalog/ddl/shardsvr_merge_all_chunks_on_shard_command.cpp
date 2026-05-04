@@ -45,6 +45,8 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
+#include "mongo/db/shard_role/shard_catalog/collection_sharding_runtime.h"
+#include "mongo/db/shard_role/shard_catalog/shard_filtering_metadata_refresh.h"
 #include "mongo/db/sharding_environment/client/shard.h"
 #include "mongo/db/sharding_environment/grid.h"
 #include "mongo/db/topology/shard_registry.h"
@@ -100,6 +102,19 @@ public:
                     "invalid namespace specified for request",
                     ns().isValid());
 
+            // Because this is a non-authoritative update, we must mark the CSR metadata as
+            // kNonAuthoritative so that the following refresh will fetch the metadata from the
+            // config server. Leaving it kAuthoritative would short-circuit the refresh against the
+            // durable shard catalog and keep the CSR pinned to the pre-split version.
+            // This must be done before starting the operation to ensure the CSR is left as
+            // kNonAuthoritative in case of an unexpected failure.
+            // TODO (SERVER-125786) The clearFilteringMetadata_nonAuthoritative should go away once
+            // mergeAllChunks becomes authoritative.
+            {
+                auto scopedCsr = CollectionShardingRuntime::acquireExclusive(opCtx, ns());
+                scopedCsr->clearFilteringMetadata_nonAuthoritative(opCtx);
+            }
+
             ConfigSvrCommitMergeAllChunksOnShard configSvrCommitMergeAllChunksOnShard(ns());
             configSvrCommitMergeAllChunksOnShard.setDbName(DatabaseName::kAdmin);
             configSvrCommitMergeAllChunksOnShard.setShard(request().getShard());
@@ -120,8 +135,16 @@ public:
 
             uassertStatusOK(Shard::CommandResponse::getEffectiveStatus(swCommandResponse));
 
-            return MergeAllChunksOnShardResponse::parse(swCommandResponse.getValue().response,
-                                                        IDL_PARSER_CONTEXT);
+            auto response = MergeAllChunksOnShardResponse::parse(
+                swCommandResponse.getValue().response, IDL_PARSER_CONTEXT);
+
+            // Update the shard catalog filtering metadata to reflect the new shard
+            // version produced by the config server merge.
+            uassertStatusOK(
+                FilteringMetadataCache::get(opCtx)->onCollectionPlacementVersionMismatch(
+                    opCtx, ns(), response.getShardVersion()));
+
+            return response;
         }
 
     private:

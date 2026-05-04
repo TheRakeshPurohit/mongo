@@ -28,15 +28,15 @@
  */
 
 #include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/cancelable_operation_context.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/dbdirectclient.h"
-#include "mongo/db/dbhelpers.h"
 #include "mongo/db/generic_argument_util.h"
 #include "mongo/db/global_catalog/ddl/sharded_ddl_commands_gen.h"
 #include "mongo/db/global_catalog/ddl/sharding_ddl_util.h"
+#include "mongo/db/shard_role/shard_catalog/commit_collection_metadata_locally.h"
 #include "mongo/db/sharding_environment/grid.h"
 #include "mongo/db/topology/sharding_state.h"
-#include "mongo/db/topology/vector_clock/vector_clock.h"
 #include "mongo/db/transaction/transaction_participant.h"
 #include "mongo/logv2/log.h"
 
@@ -55,9 +55,10 @@ public:
     }
 
     std::string help() const override {
-        return "Internal command. This command aims to fetch collection and chunks metadata, for a "
-               "specific namespace, from the global catalog and persist it locally in the "
-               "shard catalog";
+        return "Internal command. Fetches collection and chunk metadata for a specific namespace "
+               "from the global catalog, persists it locally in the shard catalog, installs "
+               "it authoritatively on this node's in-memory CollectionShardingRuntime, and "
+               "invalidates the collection metadata on secondaries.";
     }
 
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
@@ -73,13 +74,13 @@ public:
         using InvocationBase::InvocationBase;
 
         void typedRun(OperationContext* opCtx) {
-            // Ensure shard is ready to accept sharded commands
+            // Ensure shard is ready to accept sharded commands.
             ShardingState::get(opCtx)->assertCanAcceptShardedCommands();
 
-            // Ensure interruption on step down/up
+            // Ensure interruption on step down/up.
             opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
 
-            // Check command write concern
+            // Check command write concern.
             CommandHelpers::uassertCommandRunWithMajority(Request::kCommandName,
                                                           opCtx->getWriteConcern());
 
@@ -95,9 +96,22 @@ public:
                     "_shardsvrFetchCollMetadata can only run when migrations are disabled",
                     !sharding_ddl_util::checkAllowMigrations(opCtx, nss));
 
-            auto collAndChunks = _fetchCollectionAndChunks(opCtx, nss);
+            // Use an AlternativeClientRegion to perform the shard catalog writes outside the
+            // retryable write session. The shard catalog commit contains its own idempotency
+            // logic, and running inside the parent session would conflict with the dummy write
+            // we issue below to mark the txn on secondaries.
+            {
+                auto newClient = getGlobalServiceContext()->getService()->makeClient(
+                    "ShardsvrFetchCollMetadata");
+                AlternativeClientRegion acr(newClient);
+                auto newOpCtx = CancelableOperationContext(
+                    cc().makeOperationContext(),
+                    opCtx->getCancellationToken(),
+                    Grid::get(opCtx->getServiceContext())->getExecutorPool()->getFixedExecutor());
+                newOpCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
 
-            _persistMetadataLocally(opCtx, nss, collAndChunks);
+                shard_catalog_commit::commitCollectionMetadataLocally(newOpCtx.get(), nss);
+            }
 
             LOGV2_INFO(10140202, "Persisted metadata locally on shard", "ns"_attr = nss);
 
@@ -127,74 +141,6 @@ public:
                         ->isAuthorizedForActionsOnResource(
                             ResourcePattern::forClusterResource(request().getDbName().tenantId()),
                             ActionType::internal));
-        }
-
-        auto _fetchCollectionAndChunks(OperationContext* opCtx, const NamespaceString& nss)
-            -> std::pair<CollectionType, std::vector<ChunkType>> {
-
-            const auto readConcern = [&]() -> repl::ReadConcernArgs {
-                const auto vcTime = VectorClock::get(opCtx)->getTime();
-                return {vcTime.configTime(), repl::ReadConcernLevel::kSnapshotReadConcern};
-            }();
-
-            return Grid::get(opCtx)->catalogClient()->getCollectionAndChunks(
-                opCtx, nss, ChunkVersion::IGNORED(), readConcern);
-        }
-
-        void _persistMetadataLocally(
-            OperationContext* opCtx,
-            const NamespaceString& nss,
-            const std::pair<CollectionType, std::vector<ChunkType>>& collAndChunks) {
-            auto newClient =
-                opCtx->getServiceContext()->getService()->makeClient("ShardsvrFetchCollMetadata");
-            AlternativeClientRegion acr(newClient);
-            auto newOpCtx =
-                CancelableOperationContext(cc().makeOperationContext(),
-                                           opCtx->getCancellationToken(),
-                                           Grid::get(opCtx)->getExecutorPool()->getFixedExecutor());
-            auto newOpCtxPtr = newOpCtx.get();
-
-            DBDirectClient dbClient(newOpCtxPtr);
-
-            // Persist Collection Metadata
-            write_ops::UpdateCommandRequest collUpdateReq(
-                NamespaceString::kConfigShardCatalogCollectionsNamespace);
-            {
-                write_ops::UpdateOpEntry entry;
-                const auto serializedNs =
-                    NamespaceStringUtil::serialize(nss, SerializationContext::stateDefault());
-                entry.setQ(BSON(CollectionType::kNssFieldName << serializedNs));
-                entry.setU(collAndChunks.first.toBSON());
-                entry.setUpsert(true);
-                entry.setMulti(false);
-                collUpdateReq.setUpdates({std::move(entry)});
-            }
-
-            collUpdateReq.setWriteConcern(defaultMajorityWriteConcern());
-            write_ops::checkWriteErrors(dbClient.update(collUpdateReq));
-
-            // Persist Chunk Metadata
-            const auto chunks = collAndChunks.second;
-            if (chunks.empty()) {
-                LOGV2_INFO(10303101, "No chunk metadata to persist", "ns"_attr = nss);
-                return;
-            }
-            write_ops::UpdateCommandRequest chunkUpdateReq(
-                NamespaceString::kConfigShardCatalogChunksNamespace);
-            std::vector<write_ops::UpdateOpEntry> chunkUpdates;
-            chunkUpdates.reserve(chunks.size());
-
-            for (const auto& chunk : chunks) {
-                write_ops::UpdateOpEntry entry;
-                entry.setQ(BSON(ChunkType::name() << chunk.getName()));
-                entry.setU(chunk.toConfigBSON());
-                entry.setUpsert(true);
-                entry.setMulti(false);
-                chunkUpdates.push_back(std::move(entry));
-            }
-            chunkUpdateReq.setUpdates(std::move(chunkUpdates));
-            chunkUpdateReq.setWriteConcern(defaultMajorityWriteConcern());
-            write_ops::checkWriteErrors(dbClient.update(chunkUpdateReq));
         }
     };
 };

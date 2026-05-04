@@ -17,27 +17,10 @@ function getChunksMetadataFromGlobalCatalog(uuid) {
     return st.s.getDB("config").chunks.find({uuid}).toArray();
 }
 
-// Helper: Validate that the collection metadata from the shard catalog matches expected.
-function validateCollectionMetadataFromShardCatalog(ns, shard, expectedCollMetadata) {
-    const collMetadataFromShard = shard.getDB("config").getCollection("shard.catalog.collections").findOne({_id: ns});
-    assert.docEq(expectedCollMetadata, collMetadataFromShard, "Mismatch in collection metadata for namespace: " + ns);
-}
-
-// Helper: Validate that the chunks metadata from the shard catalog matches expected.
-function validateChunksFromShardCatalog(uuid, shard, expectedChunksMetadata) {
-    const chunksMetadataFromShard = shard.getDB("config").getCollection("shard.catalog.chunks").find({uuid}).toArray();
-
-    assert.eq(
-        expectedChunksMetadata.length,
-        chunksMetadataFromShard.length,
-        "Mismatch in number of chunks for uuid: " + uuid,
-    );
-
-    expectedChunksMetadata.forEach((expectedChunk) => {
-        const localChunk = chunksMetadataFromShard.find((c) => c._id.equals(expectedChunk._id));
-        assert(localChunk, "Chunk " + expectedChunk._id + " missing locally on shard");
-        assert.docEq(localChunk, expectedChunk, "Chunk metadata mismatch for " + expectedChunk._id);
-    });
+// Helper: Assert zero metadata inconsistencies for the given collection
+function assertNoMetadataInconsistencies(coll) {
+    const inconsistencies = coll.checkMetadataConsistency().toArray();
+    assert.eq(0, inconsistencies.length, tojson(inconsistencies));
 }
 
 {
@@ -102,12 +85,8 @@ function validateChunksFromShardCatalog(uuid, shard, expectedChunksMetadata) {
         session.endSession();
     }
 
-    // Validate collection metadata.
-    validateCollectionMetadataFromShardCatalog(ns, st.shard0, globalCollMetadata);
-
-    // Validate chunks metadata.
-    const globalChunksMetadata = getChunksMetadataFromGlobalCatalog(collUUID);
-    validateChunksFromShardCatalog(collUUID, st.shard0, globalChunksMetadata);
+    // Validate collection and chunk metadata consistency for the collection.
+    assertNoMetadataInconsistencies(testColl);
 }
 
 {
@@ -155,13 +134,8 @@ function validateChunksFromShardCatalog(uuid, shard, expectedChunksMetadata) {
     assert.commandWorked(st.s.adminCommand({enableSharding: dbName, primaryShard: st.shard0.shardName}));
     assert.commandWorked(st.s.adminCommand({shardCollection: ns, key: {_id: 1}}));
 
-    // disable migrations
-    assert.commandWorked(
-        st.configRS
-            .getPrimary()
-            .adminCommand({_configsvrSetAllowMigrations: ns, allowMigrations: false, writeConcern: {w: "majority"}}),
-    );
-
+    // The retryable-write uassert fires before the migrations-disabled check, so there's no need
+    // to disable migrations here.
     assert.commandFailedWithCode(
         st.shard0.getDB(dbName).runCommand({_shardsvrFetchCollMetadata: ns, writeConcern: {w: "majority"}}),
         10303100,
@@ -241,11 +215,8 @@ function validateChunksFromShardCatalog(uuid, shard, expectedChunksMetadata) {
         session.endSession();
     }
 
-    // Validate metadata consistency.
-    const globalChunksMetadata = getChunksMetadataFromGlobalCatalog(collUUID);
-
-    validateCollectionMetadataFromShardCatalog(ns, st.shard0, globalCollMetadata);
-    validateChunksFromShardCatalog(collUUID, st.shard0, globalChunksMetadata);
+    // Validate collection and chunk metadata consistency for the collection.
+    assertNoMetadataInconsistencies(testColl);
 }
 
 st.stop();

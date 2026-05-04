@@ -64,12 +64,18 @@ void commitDropCollectionLocally(OperationContext* opCtx,
                                  const UUID& uuid);
 
 /**
- * Fetches the collection metadata and owned chunks from the global catalog, persists them to the
- * shard catalog (config.shard.catalog.collections and config.shard.catalog.chunks), writes an
- * oplog entry to invalidate collection metadata on secondaries, and updates the in-memory
- * CollectionShardingRuntime (CSR) with the new routing information.
+ * Performs the local persistence of up-to-date collection metadata and chunk information for a
+ * sharded collection on the shard. Specifically:
+ *   1. Removes any existing chunk entries for the specified collection from the shard catalog
+ *      (config.shard.catalog.chunks).
+ *   2. Fetches the latest collection metadata and owned chunk entries from the global catalog.
+ *   3. Persists the collection metadata and owned chunks to the shard catalog collections and
+ * chunks namespaces (config.shard.catalog.collections and config.shard.catalog.chunks).
+ *   4. Writes an oplog entry to invalidate collection metadata on secondaries.
+ *   5. Updates the in-memory CollectionShardingRuntime (CSR) to reflect the new filtering
+ * information.
  */
-void commitCreateCollectionLocally(OperationContext* opCtx, const NamespaceString& nss);
+void commitCollectionMetadataLocally(OperationContext* opCtx, const NamespaceString& nss);
 
 /**
  * Fetches the collection metadata from the global catalog, removes any existing chunk entries for

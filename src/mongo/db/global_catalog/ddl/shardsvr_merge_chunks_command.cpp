@@ -49,6 +49,7 @@
 #include "mongo/db/s/chunk_operation_precondition_checks.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
+#include "mongo/db/shard_role/shard_catalog/collection_sharding_runtime.h"
 #include "mongo/db/shard_role/shard_catalog/shard_filtering_metadata_refresh.h"
 #include "mongo/db/sharding_environment/grid.h"
 #include "mongo/db/sharding_environment/sharding_feature_flags_gen.h"
@@ -192,6 +193,19 @@ public:
                 return metadata;
             }();
 
+            // Because this is a non-authoritative update, we must mark the CSR metadata as
+            // kNonAuthoritative so that the following refresh will fetch the metadata from the
+            // config server. Leaving it kAuthoritative would short-circuit the refresh against the
+            // durable shard catalog and keep the CSR pinned to the pre-split version.
+            // This must be done before starting the operation to ensure the CSR is left as
+            // kNonAuthoritative in case of an unexpected failure.
+            // TODO (SERVER-125784) The clearFilteringMetadata_nonAuthoritative should go away once
+            // merge becomes authoritative.
+            {
+                auto scopedCsr = CollectionShardingRuntime::acquireExclusive(opCtx, ns());
+                scopedCsr->clearFilteringMetadata_nonAuthoritative(opCtx);
+            }
+
             auto const shardingState = ShardingState::get(opCtx);
 
             ConfigSvrMergeChunks configRequest{
@@ -218,6 +232,8 @@ public:
                 }
                 return boost::none;
             }();
+
+            // Update the shard catalog filtering metadata to reflect the new shard version.
             uassertStatusOK(
                 FilteringMetadataCache::get(opCtx)->onCollectionPlacementVersionMismatch(
                     opCtx, nss, std::move(chunkVersionReceived)));

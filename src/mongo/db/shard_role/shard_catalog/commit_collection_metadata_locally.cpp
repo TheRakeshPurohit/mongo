@@ -313,7 +313,7 @@ void commitDropCollectionLocally(OperationContext* opCtx,
     clearShardCatalogCacheForDroppedCollection(opCtx, nss, uuid);
 }
 
-void commitCreateCollectionLocally(OperationContext* opCtx, const NamespaceString& nss) {
+void commitCollectionMetadataLocally(OperationContext* opCtx, const NamespaceString& nss) {
     auto coll = fetchCollection(opCtx, nss);
     auto ownedChunks = fetchOwnedChunks(opCtx, nss, coll);
 

@@ -201,7 +201,7 @@ TEST_F(CommitCollectionMetadataLocallyTest, CreateCollectionPersistsCollectionAn
     auto [collType, chunks] = makeCollectionMetadata(3);
     mockCatalogClient()->setCollectionMetadata(collType, chunks);
 
-    shard_catalog_commit::commitCreateCollectionLocally(operationContext(), kTestNss);
+    shard_catalog_commit::commitCollectionMetadataLocally(operationContext(), kTestNss);
 
     ASSERT_EQ(countLocalDocs(NamespaceString::kConfigShardCatalogCollectionsNamespace), 1);
     ASSERT_EQ(countLocalDocs(NamespaceString::kConfigShardCatalogChunksNamespace), 3);
@@ -218,7 +218,7 @@ TEST_F(CommitCollectionMetadataLocallyTest, CreateCollectionUpdatesCSR) {
     auto [collType, chunks] = makeCollectionMetadata(2);
     mockCatalogClient()->setCollectionMetadata(collType, chunks);
 
-    shard_catalog_commit::commitCreateCollectionLocally(operationContext(), kTestNss);
+    shard_catalog_commit::commitCollectionMetadataLocally(operationContext(), kTestNss);
 
     auto scopedCsr = CollectionShardingRuntime::acquireShared(operationContext(), kTestNss);
     auto metadata = scopedCsr->getCurrentMetadataIfKnown();
@@ -231,8 +231,8 @@ TEST_F(CommitCollectionMetadataLocallyTest, CreateCollectionIsIdempotent) {
     auto [collType, chunks] = makeCollectionMetadata(2);
     mockCatalogClient()->setCollectionMetadata(collType, chunks);
 
-    shard_catalog_commit::commitCreateCollectionLocally(operationContext(), kTestNss);
-    shard_catalog_commit::commitCreateCollectionLocally(operationContext(), kTestNss);
+    shard_catalog_commit::commitCollectionMetadataLocally(operationContext(), kTestNss);
+    shard_catalog_commit::commitCollectionMetadataLocally(operationContext(), kTestNss);
 
     ASSERT_EQ(countLocalDocs(NamespaceString::kConfigShardCatalogCollectionsNamespace), 1);
     ASSERT_EQ(countLocalDocs(NamespaceString::kConfigShardCatalogChunksNamespace), 2);
@@ -242,7 +242,7 @@ TEST_F(CommitCollectionMetadataLocallyTest, CreateCollectionReplacesStaleChunksO
     // First pass: persist the initial chunks for the collection.
     auto [collType, chunksPass1] = makeCollectionMetadata(2);
     mockCatalogClient()->setCollectionMetadata(collType, chunksPass1);
-    shard_catalog_commit::commitCreateCollectionLocally(operationContext(), kTestNss);
+    shard_catalog_commit::commitCollectionMetadataLocally(operationContext(), kTestNss);
 
     ASSERT_EQ(countLocalDocs(NamespaceString::kConfigShardCatalogChunksNamespace), 2);
 
@@ -253,7 +253,7 @@ TEST_F(CommitCollectionMetadataLocallyTest, CreateCollectionReplacesStaleChunksO
         chunk.setName(OID::gen());
     }
     mockCatalogClient()->setCollectionMetadata(collType, chunksPass2);
-    shard_catalog_commit::commitCreateCollectionLocally(operationContext(), kTestNss);
+    shard_catalog_commit::commitCollectionMetadataLocally(operationContext(), kTestNss);
 
     // Only the second-pass chunks should remain; the first-pass rows must be deleted, not appended.
     ASSERT_EQ(countLocalDocs(NamespaceString::kConfigShardCatalogChunksNamespace), 2);
