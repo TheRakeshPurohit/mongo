@@ -47,7 +47,7 @@ constexpr auto kTotalFragmentsField = "of"_sd;
 
 /**
  * Calculates BSON size by serializing the event to BSON. Ensures that the serialization is
- * re-usable. The parameter 'withMetadata' desides whether the metadata is counted.
+ * re-usable. The parameter 'withMetadata' decides whether the metadata is counted.
  * Also returns a new document optimized for later serialization by PlanExecutorPipeline.
  */
 std::pair<Document, size_t> processChangeEventBeforeSplit(const Document& event, bool withMetadata);

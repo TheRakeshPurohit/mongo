@@ -81,6 +81,11 @@ public:
         return boost::none;
     }
 
+    DepsTracker::State getDependencies(DepsTracker* deps) const final {
+        deps->setNeedsMetadata(DocumentMetadataFields::MetaType::kSortKey);
+        return DepsTracker::State::SEE_NEXT;
+    }
+
     const char* getSourceName() const final {
         return kStageName.data();
     }
