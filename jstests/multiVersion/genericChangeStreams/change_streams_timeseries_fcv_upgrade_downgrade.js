@@ -914,6 +914,7 @@ for (const [downgradeFCV, testHelper] of crossProduct(
                 const cursor = openChangeStreamCursor(cst, 1, {
                     showSystemEvents: false,
                     watchMode: ChangeStreamWatchMode.kDb,
+                    version: "v1", // Matches mongos's own selection at downgraded FCV.
                 });
 
                 insertData("preUpgrade");
@@ -993,6 +994,7 @@ for (const [downgradeFCV, testHelper] of crossProduct(
                     showSystemEvents: true,
                     watchMode,
                     comment,
+                    version: "v1", // Matches mongos's own selection at downgraded FCV.
                 });
 
                 {

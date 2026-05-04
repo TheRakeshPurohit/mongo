@@ -482,11 +482,6 @@ ExecutorFuture<void> TimeseriesUpgradeDowngradeCoordinator::_runImpl(
                                                                    defaultMajorityWriteConcern(),
                                                                    osi,
                                                                    **executor);
-
-                // TODO SERVER-117481: Generate placement change notifications for change streams.
-                // Similar to rename coordinator (kSetupChangeStreamsPreconditions phase), we need
-                // to notify change stream readers about the namespace change from oldTrackedNss
-                // to newTrackedNss using generatePlacementChangeNotificationOnShard().
             }))
         .then(_buildPhaseHandler(
             Phase::kReleaseCriticalSection,
