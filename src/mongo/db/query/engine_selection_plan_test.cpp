@@ -83,10 +83,11 @@ public:
     }
 
     std::unique_ptr<QuerySolutionNode> makeFetchSortIxScanNode(BSONObj indexKeys,
-                                                               BSONObj sortPattern) {
+                                                               BSONObj sortPattern,
+                                                               size_t limit = 0) {
         auto indexScan = std::make_unique<IndexScanNode>(nss, buildSimpleIndexEntry(indexKeys));
         auto sort = std::make_unique<SortNodeDefault>(
-            std::move(indexScan), sortPattern, 0, LimitSkipParameterization::Disabled);
+            std::move(indexScan), sortPattern, limit, LimitSkipParameterization::Disabled);
         return std::make_unique<FetchNode>(std::move(sort), nss);
     }
 
@@ -240,6 +241,17 @@ TEST_F(EngineSelectionPlanFixture, MatchProjectLookupUnwindFetchSortIxScanSelect
     EngineSelectionResult result = engineSelectionForPlan(solution.get(), dataAccessNode);
     ASSERT_EQ(result.engine, EngineChoice::kSbe);
     ASSERT_EQ(result.planPushdownRoot, solution->root());
+}
+
+TEST_F(EngineSelectionPlanFixture, LookupUnwindFetchSortIxScanWithAbsorbedLimitSelection) {
+    auto sentinel = makeSentinelNode(
+        makeFetchSortIxScanNode(fromjson("{a: 1}"), fromjson("{a: 1}"), 1 /* limit */));
+    const auto* dataAccessNode = sentinel->children[0].get();
+    auto solution = makePlan(makeLookupUnwindNode(std::move(sentinel)));
+
+    EngineSelectionResult result = engineSelectionForPlan(solution.get(), dataAccessNode);
+    ASSERT_EQ(result.engine, EngineChoice::kClassic);
+    ASSERT_EQ(result.planPushdownRoot, nullptr);
 }
 
 // Test selection of IXSCAN + FETCH + PROJECT + GROUP + LU plans.

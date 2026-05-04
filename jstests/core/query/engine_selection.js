@@ -79,6 +79,7 @@ const ixScanUnionSortShape = [{$match: {$or: [{a: 1}, {b: 1}]}}, {$sort: {c: 1}}
 // but not in ascending order to satisfy the sort.
 const ixScanSortFetchShape = [{$match: {y: {$gt: 5}}}, {$sort: {z: 1}}];
 const ixScanSortSkipFetchShape = [{$match: {y: {$gt: 5}}}, {$sort: {z: 1}}, {$skip: 1}];
+const ixScanSortLimitFetchShape = [{$match: {y: {$gt: 5}}}, {$sort: {z: 1}}, {$limit: 1}];
 
 // SKIP shapes
 const ixScanSkipFetchShape = [{$match: {a: 1}}, {$skip: 1}];
@@ -95,6 +96,7 @@ const allShapes = [
     ixScanUnionSortShape,
     ixScanSortFetchShape,
     ixScanSortSkipFetchShape,
+    ixScanSortLimitFetchShape,
     ixScanSkipFetchShape,
 ];
 
@@ -115,6 +117,7 @@ const shapesThatTriggerLookupUnwind = ffGetExecutorDeferredEngineChoice
               p !== ixScanFetchSortShape &&
               p !== ixScanUnionSortShape &&
               p !== ixScanSortSkipFetchShape &&
+              p !== ixScanSortLimitFetchShape &&
               p !== ixScanSkipFetchShape,
       )
     : allShapes;

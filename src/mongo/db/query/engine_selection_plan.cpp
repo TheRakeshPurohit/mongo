@@ -205,6 +205,13 @@ struct Range {
     }
 };
 
+// A further predicate applied on top of a stage-type match. kNone means the stage match alone
+// is sufficient; other values impose additional conditions on the matched node.
+enum class PredicateType {
+    kNone,
+    kSortWithoutAbsorbedLimit,
+};
+
 /**
  * This is a configurable rule that can match any tree pattern detectable by a state machine.
  *
@@ -227,23 +234,27 @@ public:
     }
 
     /**
-     * Creates a new state that transitions from 'state' when the machine receives the specified
-     * node. Depending on how it is used, this can be the building block for both sequences and
+     * Creates a new state that transitions from 'state' when the machine receives a node of type
+     * 'stage' that also satisfies 'allowedChildren' and the optional predicate 'predicate'.
+     * Depending on how it is used, this can be the building block for both sequences and
      * alternations on the pattern being recognized.
      *
-     * The state created is returned as an out parameter in 'state', so that the callers can chain
-     * sequences more easily.
+     * The return value represents the created state, which can be chained together with other
+     * states.
      */
-    int addState(int state, StageType stage, Range allowedChildren) {
+    int addState(int state,
+                 StageType stage,
+                 Range allowedChildren,
+                 PredicateType predicate = PredicateType::kNone) {
         validateState(state);
         int nextState = allocState();
         validateState(nextState);
 
         StateSpec& spec = _states[state];
-        auto res = spec.edges.emplace(stage, Edge{allowedChildren, nextState});
-        // If this triggers, it means we're trying to add two transitions with the same node type to
-        // the same state. NFAs allow this, but it'd complicate our implementation and provide worse
-        // performance.
+        auto res = spec.edges.emplace(stage, Edge{predicate, allowedChildren, nextState});
+        // If this triggers, it means we're trying to add two transitions with the same stage type
+        // to the same state. NFAs allow this, but it'd complicate our implementation and provide
+        // worse performance.
         tassert(
             12308402, "Engine selection state machine doesn't have unique transitions", res.second);
 
@@ -257,7 +268,7 @@ public:
 
     void preVisit(RuleEngine& engine, const QuerySolutionNode& node, size_t index) {
         // Consume this QSN node and transition the state of the current root to leaf path.
-        step(node.getType(), index);
+        step(node, index);
 
         const bool isLeaf = node.children.empty();
         // If any root to leaf path ends in a non-matching state, it means the pattern didn't
@@ -285,12 +296,13 @@ private:
     };
 
     struct Edge {
+        PredicateType predicate = PredicateType::kNone;
         Range allowedChildren;
         int nextState;
     };
 
     struct StateSpec {
-        // Transitions allowed from this state.
+        // Transitions allowed from this state, keyed by the stage type of the incoming node.
         std::map<StageType, Edge> edges;
         bool isMatch = false;
     };
@@ -320,11 +332,29 @@ private:
         return _states[_stack.top()];
     }
 
-    void step(StageType stage, size_t index) {
+    bool matchesPredicate(const Edge& edge, const QuerySolutionNode& node, size_t index) const {
+        if (!edge.allowedChildren.contains(index)) {
+            return false;
+        }
+
+        switch (edge.predicate) {
+            case PredicateType::kNone:
+                return true;
+            case PredicateType::kSortWithoutAbsorbedLimit:
+                tassert(12594101,
+                        "The SortWithoutAbsorbedLimit predicate can only be applied to SORT nodes",
+                        node.getType() == STAGE_SORT_DEFAULT);
+                return static_cast<const SortNode&>(node).limit == 0;
+        }
+
+        MONGO_UNREACHABLE;
+    }
+
+    void step(const QuerySolutionNode& node, size_t index) {
         const StateSpec& state = currentState();
 
-        auto it = state.edges.find(stage);
-        if (it != state.edges.end() && it->second.allowedChildren.contains(index)) {
+        auto it = state.edges.find(node.getType());
+        if (it != state.edges.end() && matchesPredicate(it->second, node, index)) {
             // We have a partial match, so we transition to the next state.
             _stack.push(it->second.nextState);
         } else {
@@ -349,8 +379,14 @@ private:
             for (const auto& [stage, edge] : _states[i].edges) {
                 const auto& range = edge.allowedChildren;
                 const auto& nextState = edge.nextState;
-                std::cout << "  Stage " << stage << " [" << range.min << ", " << range.max
-                          << ") -> State " << nextState << std::endl;
+
+                std::cout << "  Stage(" << stage << ")";
+                if (edge.predicate == PredicateType::kSortWithoutAbsorbedLimit) {
+                    std::cout << " + SortWithoutAbsorbedLimit";
+                }
+
+                std::cout << " [" << range.min << ", " << range.max << ") -> State " << nextState
+                          << std::endl;
             }
         }
     }
@@ -363,7 +399,6 @@ private:
     std::vector<StateSpec> _states;
     bool _allBranchesMatch = true;
 };
-
 static_assert(HasPreVisit<StateMachineRule, QuerySolutionNode>);
 static_assert(HasPostVisit<StateMachineRule, QuerySolutionNode>);
 
@@ -387,9 +422,10 @@ StateMachineRule makeLookupUnwindRule() {
         sm.addMatch(state);
     }
 
-    // Ixscan + Sort + Fetch
+    // Ixscan + Sort (SortNodeDefault) + Fetch
     {
-        state = sm.addState(fetch_state, STAGE_SORT_DEFAULT, 0);
+        state = sm.addState(
+            fetch_state, STAGE_SORT_DEFAULT, 0, PredicateType::kSortWithoutAbsorbedLimit);
         state = sm.addState(state, STAGE_IXSCAN, 0);
         sm.addMatch(state);
     }
