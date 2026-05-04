@@ -34,21 +34,12 @@
 #include "mongo/db/curop.h"
 #include "mongo/db/exec/sbe/expressions/sbe_fn_names.h"
 #include "mongo/db/exec/sbe/stages/stages.h"
-#include "mongo/db/exec/sbe/values/slot.h"
-#include "mongo/db/exec/sbe/values/value.h"
-#include "mongo/db/exec/sbe/vm/vm.h"
 #include "mongo/db/index/index_access_method.h"
-#include "mongo/db/index_names.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/field_path.h"
 #include "mongo/db/query/bson_typemask.h"
 #include "mongo/db/query/compiler/metadata/index_entry.h"
-#include "mongo/db/query/compiler/physical_model/query_solution/query_solution.h"
-#include "mongo/db/query/compiler/physical_model/query_solution/stage_types.h"
 #include "mongo/db/query/multiple_collection_accessor.h"
-#include "mongo/db/query/query_execution_knobs_gen.h"
-#include "mongo/db/query/query_integration_knobs_gen.h"
-#include "mongo/db/query/query_optimization_knobs_gen.h"
 #include "mongo/db/query/stage_builder/sbe/abt/comparison_op.h"
 #include "mongo/db/query/stage_builder/sbe/builder.h"
 #include "mongo/db/query/stage_builder/sbe/gen_expression.h"
@@ -57,19 +48,12 @@
 #include "mongo/db/query/stage_builder/sbe/gen_projection.h"
 #include "mongo/db/query/stage_builder/sbe/sbexpr.h"
 #include "mongo/db/query/stage_builder/sbe/sbexpr_helpers.h"
-#include "mongo/db/query/util/make_data_structure.h"
-#include "mongo/db/shard_role/shard_catalog/collection.h"
-#include "mongo/db/shard_role/shard_catalog/index_catalog.h"
-#include "mongo/db/shard_role/shard_catalog/index_catalog_entry.h"
-#include "mongo/db/storage/key_string/key_string.h"
-#include "mongo/db/storage/sorted_data_interface.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/str.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <utility>
-#include <vector>
 
 #include <boost/none.hpp>
 #include <boost/optional/optional.hpp>
@@ -1533,6 +1517,17 @@ std::pair<SbStage, PlanStageSlots> SlotBasedStageBuilder::buildEqLookup(
 }  // buildEqLookup
 
 namespace {
+
+/**
+ * Construct an OwnedSlotName with a SlotType of either kField or kPathExpr depending on
+ * whether the field is a top-level field or a dotted path.
+ */
+PlanStageSlots::OwnedSlotName makeSlotName(FieldPath field) {
+    return std::make_pair(field.getPathLength() == 1 ? PlanStageSlots::SlotType::kField
+                                                     : PlanStageSlots::SlotType::kPathExpr,
+                          field.fullPath());
+}
+
 /**
  * Generates an expression for evaluating a path that takes the value found at the first path
  * component and returns a single value from evaluating the remaining path components. The
@@ -1627,15 +1622,69 @@ std::pair<SbStage, PlanStageSlots> generateJoinResult(const BinaryJoinEmbeddingN
                         outputs.set(key, projectedSlot.second);
                     }
                 }
-                outputs.set(std::make_pair(PlanStageSlots::SlotType::kField, embedding->fullPath()),
+                outputs.set(makeSlotName(*embedding),
                             childOutputs.get(SlotBasedStageBuilder::kResult));
             }
         };
         projectFields(node->leftEmbeddingField, leftOutputs);
         projectFields(node->rightEmbeddingField, rightOutputs);
 
-        outputs.addEffectsToResultInfo(state, reqs, fieldEffect);
-        return {std::move(stage), std::move(outputs)};
+        // Attempt to return a non-materialized output that describes the document shape as a
+        // "result info" with "field effects" that parent builders can mutate. Because non-join
+        // builders cannot operate on shapes with nested documents (dotted paths), we fall back to
+        // materialization (outputting a 'ResultObj') unless our parent explicitly requested all the
+        // fields and paths in the current shape.
+        const auto& products = fieldEffect.getFieldList();
+        bool materializeNow = std::any_of(products.begin(), products.end(), [reqs](auto& name) {
+            return !reqs.has(std::make_pair(PlanStageSlots::kField, name)) &&
+                !reqs.has(std::make_pair(PlanStageSlots::kPathExpr, name));
+        });
+
+        if (!materializeNow) {
+            // We could have an intermediate stage that tries to access our data from the top-level
+            // field: if we detect this, let's materialize only this field and keep producing a
+            // kResultInfo.
+            auto names = outputs.getRequiredNamesInOrder(reqs);
+            for (auto& requested : names) {
+                if (requested.first == PlanStageSlots::kField && !outputs.has(requested)) {
+                    // Our parent wants this field, but we don't generate it. Check if it's an
+                    // ancestor of a kPathExpr we produce, and materialize just this slot.
+                    FieldPath requestedField(requested.second);
+                    for (auto& output : outputs.getAllNameSlotPairsInOrder()) {
+                        if (requestedField.isPrefixOf(output.first.second)) {
+                            std::vector<std::string> paths;
+                            paths.emplace_back(output.first.second);
+                            std::vector<ProjectNode> nodes;
+                            nodes.emplace_back(output.second);
+                            SbExpr materializedField =
+                                generateProjection(state,
+                                                   projection_ast::ProjectType::kAddition,
+                                                   std::move(paths),
+                                                   std::move(nodes),
+                                                   rootDocumentSlot,
+                                                   nullptr /* slots */,
+                                                   0,
+                                                   true /* shouldProduceBson */);
+
+                            SbBuilder b(state, node->nodeId());
+                            auto [outStage, outSlots] =
+                                b.makeProject(std::move(stage), std::move(materializedField));
+
+                            outputs.set(requested, outSlots[0]);
+                            stage = std::move(outStage);
+                            break;
+                        }
+                    }
+                }
+            }
+            // Final check: if not all the requested field from the parent are satisfied by the
+            // kResultInfo, fallback to materialize the entire kResult.
+            if (std::all_of(names.begin(), names.end(), [outputs](auto& name) {
+                    return name.first != PlanStageSlots::kField || outputs.has(name);
+                })) {
+                return {std::move(stage), std::move(outputs)};
+            }
+        }
     }
 
     // Finally, build the projection that constructs a single join result from a pair of documents
@@ -1664,7 +1713,7 @@ std::pair<SbStage, PlanStageSlots> generateJoinResult(const BinaryJoinEmbeddingN
             // TODO: SERVER-113230 in case of conflict, we give priority to the left side. Depending
             // on the join graph, an embedding having the same name of a top-level field in the base
             // collection could fail to overwrite it.
-            auto key = std::make_pair(SlotBasedStageBuilder::kField, field);
+            auto key = makeSlotName(field);
             if (!node->leftEmbeddingField && leftOutputs.has(key)) {
                 nodes.emplace_back(leftOutputs.get(key));
             } else if (!node->rightEmbeddingField && rightOutputs.has(key)) {
@@ -1695,51 +1744,37 @@ std::pair<std::vector<PlanStageReqs::OwnedSlotName>, std::vector<PlanStageReqs::
 collectRequestedFields(const BinaryJoinEmbeddingNode* node,
                        const PlanStageReqs& reqs,
                        const QsnAnalysis& qsnAnalysis) {
-    StringSet leftTopLevelFields, rightTopLevelFields, leftPaths, rightPaths;
+    StringSet leftPaths, rightPaths;
+    auto requestFields = [](StringSet& targetSet,
+                            const boost::optional<FieldEffects>& childFieldEffect,
+                            const FieldPath& fieldPredicate) {
+        // Request the longest prefix that is listed in the output of this side; if it cannot be
+        // found, request the first part of the path.
+        size_t i = 0;
+        if (childFieldEffect) {
+            for (i = fieldPredicate.getPathLength() - 1; i > 0; i--) {
+                auto prefix = fieldPredicate.getSubpath(i - 1);
+                if (childFieldEffect->isAllowedField(prefix)) {
+                    targetSet.insert(std::string(prefix));
+                    break;
+                }
+            }
+        }
+        if (i == 0) {
+            targetSet.insert(std::string(fieldPredicate.front()));
+        }
+        // Add an optional request for the entire path.
+        if (fieldPredicate.getPathLength() > 1) {
+            targetSet.insert(fieldPredicate.fullPath());
+        }
+    };
+    auto& leftChildFieldEffect = qsnAnalysis.getQsnInfo(node->children[0]).effects;
+    auto& rightChildFieldEffect = qsnAnalysis.getQsnInfo(node->children[1]).effects;
     for (const auto& predicate : node->joinPredicates) {
         tassert(10984702, "Empty path in join predicate", predicate.leftField.getPathLength() > 0);
-        // Request the longest prefix that is listed in the output of this side; if it cannot be
-        // found, request the first part of the path.
-        auto& leftChildFieldEffect = qsnAnalysis.getQsnInfo(node->children[0]).effects;
-        size_t i = 0;
-        if (leftChildFieldEffect) {
-            for (i = predicate.leftField.getPathLength() - 1; i > 0; i--) {
-                auto prefix = predicate.leftField.getSubpath(i - 1);
-                if (leftChildFieldEffect->isAllowedField(prefix)) {
-                    leftTopLevelFields.insert(std::string(prefix));
-                    break;
-                }
-            }
-        }
-        if (i == 0) {
-            leftTopLevelFields.insert(std::string(predicate.leftField.front()));
-        }
-        // Add an optional request for the entire path.
-        if (predicate.leftField.getPathLength() > 1) {
-            leftPaths.insert(predicate.leftField.fullPath());
-        }
-
         tassert(10984703, "Empty path in join predicate", predicate.rightField.getPathLength() > 0);
-        // Request the longest prefix that is listed in the output of this side; if it cannot be
-        // found, request the first part of the path.
-        auto& rightChildFieldEffect = qsnAnalysis.getQsnInfo(node->children[1]).effects;
-        i = 0;
-        if (rightChildFieldEffect) {
-            for (i = predicate.rightField.getPathLength() - 1; i > 0; i--) {
-                auto prefix = predicate.rightField.getSubpath(i - 1);
-                if (rightChildFieldEffect->isAllowedField(prefix)) {
-                    rightTopLevelFields.insert(std::string(prefix));
-                    break;
-                }
-            }
-        }
-        if (i == 0) {
-            rightTopLevelFields.insert(std::string(predicate.rightField.front()));
-        }
-        // Add an optional request for the entire path.
-        if (predicate.rightField.getPathLength() > 1) {
-            rightPaths.insert(predicate.rightField.fullPath());
-        }
+        requestFields(leftPaths, leftChildFieldEffect, predicate.leftField);
+        requestFields(rightPaths, rightChildFieldEffect, predicate.rightField);
     }
 
     auto& fieldEffect = qsnAnalysis.getQsnInfo(node).effects;
@@ -1754,6 +1789,8 @@ collectRequestedFields(const BinaryJoinEmbeddingNode* node,
         auto& childFieldEffect = qsnAnalysis.getQsnInfo(childNode).effects;
         auto& otherChildFieldEffect = qsnAnalysis.getQsnInfo(otherChildNode).effects;
         bool childHoldsMainCollection = false;
+        // The main collection is the first non-BinaryJoin nodes that can be reached by
+        // following all the BinaryJoin nodes that have no embedding.
         std::list<const QuerySolutionNode*> children = {childNode.get()};
         while (!children.empty()) {
             auto node = children.front();
@@ -1773,13 +1810,17 @@ collectRequestedFields(const BinaryJoinEmbeddingNode* node,
         // If this side is not embedded, forward all the requested fields to it, provided that:
         // 1) this side if the main collection or the field is an explicit output of this side
         // 2) the field is not listed as one of the outputs of the other side
-        // 3) the field doesn't start from the embedding of the other side
+        // 3) the field doesn't start from the embedding of the other side or it's not an
+        //    ancestor of the embedding (e.g if the other side produces 'a.b', don't request either
+        //    'a' or 'a.b.c' from this side)
         if (!thisEmbedding) {
             for (auto& field : reqs.getFields()) {
                 if ((childHoldsMainCollection ||
                      (childFieldEffect && childFieldEffect->isAllowedField(field))) &&
                     (!otherChildFieldEffect || !otherChildFieldEffect->isAllowedField(field)) &&
-                    (!otherEmbedding || !otherEmbedding->isPrefixOf(field))) {
+                    (!otherEmbedding ||
+                     (!FieldPath(field).isPrefixOf(otherEmbedding->fullPath()) &&
+                      !otherEmbedding->isPrefixOf(field)))) {
                     targetSet.insert(field);
                 }
             }
@@ -1793,29 +1834,23 @@ collectRequestedFields(const BinaryJoinEmbeddingNode* node,
             }
         }
     };
-    forwardFields(leftTopLevelFields,
+    forwardFields(leftPaths,
                   node->children[0],
                   node->children[1],
                   node->leftEmbeddingField,
                   node->rightEmbeddingField);
-    forwardFields(rightTopLevelFields,
+    forwardFields(rightPaths,
                   node->children[1],
                   node->children[0],
                   node->rightEmbeddingField,
                   node->leftEmbeddingField);
 
     std::vector<PlanStageReqs::OwnedSlotName> leftRequests, rightRequests;
-    for (auto& field : leftTopLevelFields) {
-        leftRequests.emplace_back(std::make_pair(PlanStageReqs::kField, field));
-    }
     for (auto& field : leftPaths) {
-        leftRequests.emplace_back(std::make_pair(PlanStageReqs::kPathExpr, field));
-    }
-    for (auto& field : rightTopLevelFields) {
-        rightRequests.emplace_back(std::make_pair(PlanStageReqs::kField, field));
+        leftRequests.emplace_back(makeSlotName(field));
     }
     for (auto& field : rightPaths) {
-        rightRequests.emplace_back(std::make_pair(PlanStageReqs::kPathExpr, field));
+        rightRequests.emplace_back(makeSlotName(field));
     }
     return std::make_pair(std::move(leftRequests), std::move(rightRequests));
 }
@@ -1879,7 +1914,7 @@ std::pair<SbStage, PlanStageSlots> SlotBasedStageBuilder::buildNestedLoopJoinEmb
     // automatically exposed).
     for (const auto& requestedFields : {fieldEffect->getFieldList(), reqs.getFields()}) {
         for (const auto& field : requestedFields) {
-            if (auto slot = leftOutputs.getIfExists(std::make_pair(kField, field)); slot) {
+            if (auto slot = leftOutputs.getIfExists(makeSlotName(field)); slot) {
                 if (auto [_, inserted] = outerProjectsSet.insert(slot->getId()); inserted) {
                     outerProjects.emplace_back(slot->getId());
                 }
@@ -1895,14 +1930,7 @@ std::pair<SbStage, PlanStageSlots> SlotBasedStageBuilder::buildNestedLoopJoinEmb
         // return either an SbSlot or an expression that depends on only the ResultObj slot.
         for (size_t i = 0; i < predicate.leftField.getPathLength(); ++i) {
             auto prefix = predicate.leftField.getSubpath(i);
-            auto slot = leftOutputs.getIfExists(std::make_pair(PlanStageSlots::kField, prefix));
-            if (slot) {
-                if (auto [_, inserted] = outerProjectsSet.insert(slot->getId()); inserted) {
-                    outerProjects.emplace_back(slot->getId());
-                }
-            }
-            slot = leftOutputs.getIfExists(std::make_pair(PlanStageSlots::kPathExpr, prefix));
-            if (slot) {
+            if (auto slot = leftOutputs.getIfExists(makeSlotName(prefix)); slot) {
                 if (auto [_, inserted] = outerProjectsSet.insert(slot->getId()); inserted) {
                     outerProjects.emplace_back(slot->getId());
                 }

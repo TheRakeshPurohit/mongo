@@ -2395,5 +2395,187 @@ TEST_F(BinaryJoinStageBuilderTest, JoinDeeplyNestedCondition) {
     execPlan.expectReturnedDocuments(expected);
 }
 
+TEST_F(BinaryJoinStageBuilderTest, NLJWithDottedPathEmbeddingAndFollowOnProjection) {
+    const boost::intrusive_ptr<ExpressionContextForTest> expCtx(
+        new ExpressionContextForTest(operationContext(), _nss));
+
+    instantiateMainCollection({
+        fromjson("{_id: 0, a: {b: {c: 1, x: 1}, d: 90, y: 1}, lkey: 0}"),
+        fromjson("{_id: 1, lkey: 0, a: {x: 1, b: {y: 1, c: 1}, z: 1}}"),
+        fromjson("{_id: 2, lkey: 0, a: {x: 1, b: {y: 1}, z: 1}}"),
+        fromjson("{_id: 3, lkey: 0, a: {x: 1, b: {c: null, y: 1}, z: 1}}"),
+        fromjson("{_id: 4, lkey: 0, a: {x: 1, b: {c: [{d: 2}, 3], y: 1}, z: 1}}"),
+        fromjson("{_id: 5, lkey: 0, a: {x: 1, b: [{c: 1, y: 1}, 2], z: 1}}"),
+        fromjson("{_id: 6, lkey: 0, a: {x: 1, b: 'str', z: 1}}"),
+        fromjson("{_id: 7, lkey: 0, a: [{x: 1, b: {c: null, y: 1}, z: 1}, {b: {c: 1, d: 2}}]}"),
+        fromjson("{_id: 8, lkey: 0, a: {}, b: 2}"),
+    });
+
+    NamespaceString foreignCollectionName =
+        NamespaceString::createNamespaceString_forTest("testdb.sbe_stage_builder_foreign");
+    instantiateSecondaryCollection(foreignCollectionName,
+                                   {
+                                       fromjson("{_id: 0, fkey: 0}"),
+                                   });
+
+    // First try a join without any projection on top.
+    createNLJPlanEmbeddingRightDocument(_nss,
+                                        foreignCollectionName,
+                                        FieldPath("a.b.c"),
+                                        {std::make_pair(FieldPath("lkey"), FieldPath("fkey"))})
+        .expectReturnedDocuments({
+            fromjson("{_id: 0, a: {b: {c: {_id: 0, fkey: 0}, x: 1}, d: 90, y: 1}, lkey: 0}"),
+            fromjson("{_id: 1, lkey: 0, a: {x: 1, b: {y: 1, c: {_id: 0, fkey: 0}}, z: 1}}"),
+            fromjson("{_id: 2, lkey: 0, a: {x: 1, b: {y: 1, c: {_id: 0, fkey: 0}}, z: 1}}"),
+            fromjson("{_id: 3, lkey: 0, a: {x: 1, b: {c: {_id: 0, fkey: 0}, y: 1}, z: 1}}"),
+            fromjson("{_id: 4, lkey: 0, a: {x: 1, b: {c: {_id: 0, fkey: 0}, y: 1}, z: 1}}"),
+            fromjson("{_id: 5, lkey: 0, a: {x: 1, b: {c: {_id: 0, fkey: 0}}, z: 1}}"),
+            fromjson("{_id: 6, lkey: 0, a: {x: 1, b: {c: {_id: 0, fkey: 0}}, z: 1}}"),
+            fromjson("{_id: 7, lkey: 0, a: {b: {c: {_id: 0, fkey: 0}}}}"),
+            fromjson("{_id: 8, lkey: 0, a: {b: {c: {_id: 0, fkey: 0}}}, b: 2}"),
+        });
+
+    // Try with a projection that manipulates the same field affected by the join.
+    createNLJPlanWithFollowOnProjection(_nss,
+                                        foreignCollectionName,
+                                        FieldPath("a.b.c"),
+                                        FieldPath("lkey"),
+                                        FieldPath("fkey"),
+                                        BSON("a.d" << 0))
+        .expectReturnedDocuments({
+            fromjson("{_id: 0, a: {b: {c: {_id: 0, fkey: 0}, x: 1}, y: 1}, lkey: 0}"),
+            fromjson("{_id: 1, lkey: 0, a: {x: 1, b: {y: 1, c: {_id: 0, fkey: 0}}, z: 1}}"),
+            fromjson("{_id: 2, lkey: 0, a: {x: 1, b: {y: 1, c: {_id: 0, fkey: 0}}, z: 1}}"),
+            fromjson("{_id: 3, lkey: 0, a: {x: 1, b: {c: {_id: 0, fkey: 0}, y: 1}, z: 1}}"),
+            fromjson("{_id: 4, lkey: 0, a: {x: 1, b: {c: {_id: 0, fkey: 0}, y: 1}, z: 1}}"),
+            fromjson("{_id: 5, lkey: 0, a: {x: 1, b: {c: {_id: 0, fkey: 0}}, z: 1}}"),
+            fromjson("{_id: 6, lkey: 0, a: {x: 1, b: {c: {_id: 0, fkey: 0}}, z: 1}}"),
+            fromjson("{_id: 7, lkey: 0, a: {b: {c: {_id: 0, fkey: 0}}}}"),
+            fromjson("{_id: 8, lkey: 0, a: {b: {c: {_id: 0, fkey: 0}}}, b: 2}"),
+        });
+
+    // Insert a projection that is totally unrelated to the join graph.
+    createNLJPlanWithFollowOnProjection(_nss,
+                                        foreignCollectionName,
+                                        FieldPath("a.b.c"),
+                                        FieldPath("lkey"),
+                                        FieldPath("fkey"),
+                                        BSON("extra" << 0))
+        .expectReturnedDocuments({
+            fromjson("{_id: 0, a: {b: {c: {_id: 0, fkey: 0}, x: 1}, d: 90, y: 1}, lkey: 0}"),
+            fromjson("{_id: 1, lkey: 0, a: {x: 1, b: {y: 1, c: {_id: 0, fkey: 0}}, z: 1}}"),
+            fromjson("{_id: 2, lkey: 0, a: {x: 1, b: {y: 1, c: {_id: 0, fkey: 0}}, z: 1}}"),
+            fromjson("{_id: 3, lkey: 0, a: {x: 1, b: {c: {_id: 0, fkey: 0}, y: 1}, z: 1}}"),
+            fromjson("{_id: 4, lkey: 0, a: {x: 1, b: {c: {_id: 0, fkey: 0}, y: 1}, z: 1}}"),
+            fromjson("{_id: 5, lkey: 0, a: {x: 1, b: {c: {_id: 0, fkey: 0}}, z: 1}}"),
+            fromjson("{_id: 6, lkey: 0, a: {x: 1, b: {c: {_id: 0, fkey: 0}}, z: 1}}"),
+            fromjson("{_id: 7, lkey: 0, a: {b: {c: {_id: 0, fkey: 0}}}}"),
+            fromjson("{_id: 8, lkey: 0, a: {b: {c: {_id: 0, fkey: 0}}}, b: 2}"),
+        });
+
+    // Insert a projection that includes only the embedding.
+    createNLJPlanWithFollowOnProjection(_nss,
+                                        foreignCollectionName,
+                                        FieldPath("a.b.c"),
+                                        FieldPath("lkey"),
+                                        FieldPath("fkey"),
+                                        BSON("_id" << 1 << "a" << 1))
+        .expectReturnedDocuments({
+            fromjson("{_id: 0, a: {b: {c: {_id: 0, fkey: 0}, x: 1}, d: 90, y: 1}}"),
+            fromjson("{_id: 1, a: {x: 1, b: {y: 1, c: {_id: 0, fkey: 0}}, z: 1}}"),
+            fromjson("{_id: 2, a: {x: 1, b: {y: 1, c: {_id: 0, fkey: 0}}, z: 1}}"),
+            fromjson("{_id: 3, a: {x: 1, b: {c: {_id: 0, fkey: 0}, y: 1}, z: 1}}"),
+            fromjson("{_id: 4, a: {x: 1, b: {c: {_id: 0, fkey: 0}, y: 1}, z: 1}}"),
+            fromjson("{_id: 5, a: {x: 1, b: {c: {_id: 0, fkey: 0}}, z: 1}}"),
+            fromjson("{_id: 6, a: {x: 1, b: {c: {_id: 0, fkey: 0}}, z: 1}}"),
+            fromjson("{_id: 7, a: {b: {c: {_id: 0, fkey: 0}}}}"),
+            fromjson("{_id: 8, a: {b: {c: {_id: 0, fkey: 0}}}}"),
+        });
+
+    // Insert a projection that includes only part of the embedding.
+    createNLJPlanWithFollowOnProjection(_nss,
+                                        foreignCollectionName,
+                                        FieldPath("a.b.c"),
+                                        FieldPath("lkey"),
+                                        FieldPath("fkey"),
+                                        BSON("_id" << 1 << "a.b.c.fkey" << 1))
+        .expectReturnedDocuments({
+            fromjson("{_id: 0, a: {b: {c: {fkey: 0}}}}"),
+            fromjson("{_id: 1, a: {b: {c: {fkey: 0}}}}"),
+            fromjson("{_id: 2, a: {b: {c: {fkey: 0}}}}"),
+            fromjson("{_id: 3, a: {b: {c: {fkey: 0}}}}"),
+            fromjson("{_id: 4, a: {b: {c: {fkey: 0}}}}"),
+            fromjson("{_id: 5, a: {b: {c: {fkey: 0}}}}"),
+            fromjson("{_id: 6, a: {b: {c: {fkey: 0}}}}"),
+            fromjson("{_id: 7, a: {b: {c: {fkey: 0}}}}"),
+            fromjson("{_id: 8, a: {b: {c: {fkey: 0}}}}"),
+        });
+}
+
+// Insert a MatchNode in between two join nodes to check that anti-materialization can be
+// suspended before the main collection is processed.
+TEST_F(BinaryJoinStageBuilderTest, JoinFilterOnMaterializedDocument) {
+    instantiateMainCollection({
+        fromjson("{_id: 0, l1key: 0}"),
+        fromjson("{_id: 1, l1key: 1}"),
+    });
+
+    NamespaceString foreignCollectionName1 =
+        NamespaceString::createNamespaceString_forTest("testdb.sbe_stage_builder_foreign_1");
+    instantiateSecondaryCollection(foreignCollectionName1,
+                                   {
+                                       fromjson("{_id: 10, f1key: 0, l2key: 10}"),
+                                       fromjson("{_id: 11, f1key: 1, l2key: 11}"),
+                                   });
+
+    NamespaceString foreignCollectionName2 =
+        NamespaceString::createNamespaceString_forTest("testdb.sbe_stage_builder_foreign_2");
+    instantiateSecondaryCollection(foreignCollectionName2,
+                                   {
+                                       fromjson("{_id: 20, f2key: 10}"),
+                                       fromjson("{_id: 21, f2key: 11}"),
+                                   });
+
+    auto cs1 = std::make_unique<CollectionScanNode>(foreignCollectionName1);
+    auto cs2 = std::make_unique<CollectionScanNode>(foreignCollectionName2);
+    auto cs3 = std::make_unique<CollectionScanNode>(_nss);
+
+    const boost::intrusive_ptr<ExpressionContextForTest> expCtx(
+        new ExpressionContextForTest(operationContext(), _nss));
+
+    auto hj = std::make_unique<HashJoinEmbeddingNode>(
+        std::move(cs1),
+        std::move(cs2),
+        std::vector<QSNJoinPredicate>{QSNJoinPredicate{
+            .op = QSNJoinPredicate::ComparisonOp::Eq, .leftField = "l2key", .rightField = "f2key"}},
+        FieldPath{"x.y"},
+        FieldPath{"w.z"});
+
+    // The filter checks that the embedding has been produced, but it works on a prefix of the
+    // dotted path that the HJ produces. Expected behavior is that "x" gets materialized into a
+    // kField without interrupting the anti-materialization that allows the following composition
+    // of the result object coming from the main collection cs3.
+    auto filter =
+        std::make_unique<MatchNode>(std::move(hj), std::make_unique<ExistsMatchExpression>("x"_sd));
+
+    auto solution = makeQuerySolution(std::make_unique<HashJoinEmbeddingNode>(
+        std::move(filter),
+        std::move(cs3),
+        std::vector<QSNJoinPredicate>{QSNJoinPredicate{.op = QSNJoinPredicate::ComparisonOp::Eq,
+                                                       .leftField = "x.y.f1key",
+                                                       .rightField = "l1key"}},
+        boost::none,
+        boost::none));
+
+    auto execPlan = makeExecutablePlan(
+        _nss, {foreignCollectionName1, foreignCollectionName2}, std::move(solution), expCtx);
+    execPlan.expectReturnedDocuments({
+        fromjson("{_id: 0, l1key: 0, x: {y: {_id: 10, f1key: 0, l2key: 10}}, w: {z: {_id: 20, "
+                 "f2key: 10}}}"),
+        fromjson("{_id: 1, l1key: 1, x: {y: {_id: 11, f1key: 1, l2key: 11}}, w: {z: {_id: 21, "
+                 "f2key: 11}}}"),
+    });
+}
+
 }  // namespace
 }  // namespace mongo::sbe
