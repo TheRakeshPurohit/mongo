@@ -49,6 +49,10 @@ last-continuous:
       ticket: SERVER-125661
     - test_file: jstests/core/ddl/coll_mod_cappedsize_on_view.js
       ticket: SERVER-124967
+    - test_file: jstests/core/index/not_index_tagging.js
+      ticket: SERVER-125555
+    - test_file: jstests/core/query/sparse_index_supports_ne_null.js
+      ticket: SERVER-125555
   suites: null
 last-lts:
   all:
@@ -736,4 +740,8 @@ last-lts:
       ticket: SERVER-125661
     - test_file: jstests/core/ddl/coll_mod_cappedsize_on_view.js
       ticket: SERVER-124967
+    - test_file: jstests/core/index/not_index_tagging.js
+      ticket: SERVER-125555
+    - test_file: jstests/core/query/sparse_index_supports_ne_null.js
+      ticket: SERVER-125555
   suites: null
