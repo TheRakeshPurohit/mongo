@@ -87,6 +87,11 @@ public:
         return DistributedPlanLogic{nullptr, this, change_stream_constants::kSortSpec};
     }
 
+    DepsTracker::State getDependencies(DepsTracker* deps) const final {
+        deps->setNeedsMetadata(DocumentMetadataFields::MetaType::kSortKey);
+        return DepsTracker::State::SEE_NEXT;
+    }
+
     void addVariableRefs(std::set<Variables::Id>* refs) const final {}
 
     static const Id& id;
