@@ -177,6 +177,49 @@ mongo_cc_library(
 )
 
 mongo_cc_library(
+    name = "resharding_promise_registry",
+    hdrs = [
+        "resharding_promise_registry.h",
+    ],
+    deps = [
+        "//src/mongo:base",
+    ],
+)
+
+mongo_cc_library(
+    name = "resharding_promise",
+    hdrs = [
+        "resharding_promise.h",
+    ],
+    deps = [
+        ":resharding_promise_registry",
+        "//src/mongo/util:future_util",
+    ],
+)
+
+mongo_cc_unit_test(
+    name = "resharding_promise_test",
+    srcs = [
+        "resharding_promise_test.cpp",
+    ],
+    tags = ["mongo_unittest_seventh_group"],
+    deps = [
+        ":resharding_promise",
+    ],
+)
+
+mongo_cc_unit_test(
+    name = "resharding_promise_registry_test",
+    srcs = [
+        "resharding_promise_registry_test.cpp",
+    ],
+    tags = ["mongo_unittest_second_group"],
+    deps = [
+        ":resharding_promise",
+    ],
+)
+
+mongo_cc_library(
     name = "resharding_destined_recipient_util",
     srcs = [
         "resharding_destined_recipient_util.cpp",
