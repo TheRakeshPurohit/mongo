@@ -2238,7 +2238,7 @@ void CreateCollectionCoordinator::_commitOnGlobalCatalog(
                     opCtx,
                     nss(),
                     shardKeyPattern.toBSON(),
-                    _doc.getTranslatedRequestParams()->getCollation().toBSON(),
+                    _doc.getTranslatedRequestParams()->getCollation(),
                     _request.getUnique(),
                     _request.getUnsplittable().value_or(false));
             committedSpecs.has_value()) {
