@@ -122,18 +122,19 @@ GetNextResult ChangeStreamCheckInvalidateStage::doGetNext() {
     }
 
     const auto& doc = nextInput.getDocument();
-    DSCS::checkValueType(
-        doc[DSCS::kOperationTypeField], DSCS::kOperationTypeField, BSONType::string);
 
     ON_BLOCK_EXIT([this] { _startAfterInvalidate.reset(); });
 
     // If it's not an invalidation event, just forward the event.
-    if (!isInvalidationCommand(pExpCtx, doc[DSCS::kOperationTypeField].getString())) {
+    const auto& operationType = doc[DSCS::kOperationTypeField];
+    DSCS::checkValueType(operationType, DSCS::kOperationTypeField, BSONType::string);
+
+    if (!isInvalidationCommand(pExpCtx, operationType.getString())) {
         return nextInput;
     }
 
     // Extract the resume token from the invalidating command and set the 'fromInvalidate' bit.
-    auto resumeTokenData = ResumeToken::parse(doc[DSCS::kIdField].getDocument()).getData();
+    auto resumeTokenData = ResumeToken::parse(doc.metadata().getSortKey().getDocument()).getData();
     resumeTokenData.fromInvalidate = ResumeTokenData::FromInvalidate::kFromInvalidate;
 
     switch (_classifyInvalidationForStartAfter(resumeTokenData)) {
