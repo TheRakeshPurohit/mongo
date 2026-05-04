@@ -65,7 +65,31 @@ inline std::ostream& operator<<(std::ostream& s, const CollectionSizeCount& coll
 /**
  * Indicates whether a collection had been created or dropped since the last checkpoint.
  */
-enum class DDLState { kCreated, kDropped, kNone };
+enum class DDLState {
+    /**
+     * Indicates the collection has been created for the first time.
+     */
+    kCreated,
+
+    /**
+     * Indicates the collection has been dropped.
+     */
+    kDropped,
+
+    /**
+     * Indicates the collection has been dropped and then created again with the same UUID.
+     *
+     * This state is reachable during shard migration. See recordCollectionCreateFromMigrate() for
+     * more information.
+     */
+    kDroppedAndRecreated,
+
+    /**
+     * Indicates the collection has neither been dropped nor created, meaning that the operation
+     * with this state is an insert or update.
+     */
+    kNone
+};
 
 /**
  * Stores the size and count values for a collection along with state indicating whether the
@@ -76,11 +100,20 @@ struct SizeCountDelta {
     DDLState state{DDLState::kNone};
 
     std::string toString() const {
-        return fmt::format("sizeCount: {}, state: {}",
-                           sizeCount.toString(),
-                           (state == DDLState::kCreated
-                                ? "created"
-                                : (state == DDLState::kDropped ? "dropped" : "none")));
+        auto stateStr = [&] {
+            switch (state) {
+                case DDLState::kCreated:
+                    return "created";
+                case DDLState::kDropped:
+                    return "dropped";
+                case DDLState::kDroppedAndRecreated:
+                    return "droppedAndRecreated";
+                case DDLState::kNone:
+                    return "none";
+            }
+            MONGO_UNREACHABLE;
+        }();
+        return fmt::format("sizeCount: {}, state: {}", sizeCount.toString(), stateStr);
     }
 };
 

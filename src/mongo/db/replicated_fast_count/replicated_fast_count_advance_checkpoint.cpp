@@ -85,6 +85,7 @@ void persistCheckpoint(OperationContext* opCtx,
                 sizeCountStore.remove(opCtx, uuid);
                 break;
             }
+            case DDLState::kDroppedAndRecreated:
             case DDLState::kNone: {
                 sizeCountStore.write(opCtx,
                                      uuid,

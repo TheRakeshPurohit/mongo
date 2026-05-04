@@ -448,6 +448,46 @@ TEST_F(ReplicatedFastCountAdvanceCheckpointTest, CreateAndDropSameCheckpoint) {
     EXPECT_EQ(timestampStore.read(opCtx), ts2);
 }
 
+TEST_F(ReplicatedFastCountAdvanceCheckpointTest,
+       DropAndCreateFromMigrateSameCheckpointDiscardsPreDropPersistedTotal) {
+    // When a drop and a fromMigrate kCreate for the same UUID are processed in the same
+    // checkpoint window and a pre-existing persisted entry exists for that UUID, the new persisted
+    // total must not include the pre-existing size/count. The new collection size/count should only
+    // include inserts after the re-create oplog entry.
+
+    // Initialize the size count store with a stale value.
+    test_helpers::insertSizeCountEntry(
+        opCtx, sizeCountStore, collA.uuid, SizeCountStore::Entry(Timestamp(1, 1), 100, 50));
+
+    // Within the same checkpoint window, drop the collection, create the collection with
+    // fromMigrate: true, then insert.
+    test_helpers::writeToOplog(opCtx, test_helpers::makeDropOplogEntry(Timestamp(1, 2), collA));
+
+    const repl::OplogEntry createFromMigrateEntry{
+        repl::DurableOplogEntry{repl::DurableOplogEntryParams{
+            .opTime = repl::OpTime(Timestamp(1, 3), 1),
+            .opType = repl::OpTypeEnum::kCommand,
+            .nss = collA.nss.getCommandNS(),
+            .uuid = collA.uuid,
+            .fromMigrate = true,
+            .oField = BSON("create" << collA.nss.coll()),
+            .wallClockTime = Date_t::now(),
+        }}};
+    test_helpers::writeToOplog(opCtx, createFromMigrateEntry);
+
+    test_helpers::writeToOplog(
+        opCtx,
+        test_helpers::makeOplogEntry(
+            Timestamp(1, 4), collA, repl::OpTypeEnum::kInsert, /*sizeDelta=*/200));
+
+    advanceCheckpoint(opCtx, sizeCountStore, timestampStore);
+
+    const auto entry = sizeCountStore.read(opCtx, collA.uuid);
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_EQ(entry->size, 200);
+    EXPECT_EQ(entry->count, 1);
+}
+
 TEST_F(ReplicatedFastCountAdvanceCheckpointTest, CreateInApplyOpsUsesApplyOpsTimestamp) {
     const Timestamp ts1{1, 1};
 

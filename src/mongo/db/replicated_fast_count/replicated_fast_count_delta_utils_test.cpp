@@ -780,6 +780,163 @@ TEST_F(ExtractSizeCountDeltaForApplyOpsTest, ExtractSizeCountDeltaForNestedApply
     ASSERT_EQ(deltas.at(_uuid2), expectedDeltasNss2);
 }
 
+TEST_F(ExtractSizeCountDeltaForApplyOpsTest, FromMigrateCreateWithNoPriorState) {
+    // A fromMigrate kCreate entry with no prior UUID in the deltas map should behave like a normal
+    // create.
+    const NamespaceString cmdNss = _nss1.getCommandNS();
+
+    const BSONObj createOp = BSON("op" << "c"
+                                       << "ns" << cmdNss.ns_forTest() << "ui" << _uuid1 << "o"
+                                       << BSON("create" << _nss1.coll()) << "fromMigrate" << true);
+    const BSONObj applyOpsCmd = BSON("applyOps" << BSON_ARRAY(createOp));
+
+    const repl::OplogEntry applyOpsEntry{repl::DurableOplogEntry{repl::DurableOplogEntryParams{
+        .opTime = repl::OpTime(),
+        .opType = repl::OpTypeEnum::kCommand,
+        .nss = NamespaceString::kAdminCommandNamespace,
+        .oField = applyOpsCmd,
+        .wallClockTime = Date_t::now(),
+    }}};
+
+    SizeCountDeltas sizeCountDeltas;
+    extractSizeCountDeltasForApplyOps(applyOpsEntry, boost::none, sizeCountDeltas);
+
+    ASSERT_EQ(sizeCountDeltas.size(), 1u);
+    ASSERT_TRUE(sizeCountDeltas.contains(_uuid1));
+    EXPECT_EQ(sizeCountDeltas.at(_uuid1).sizeCount, (CollectionSizeCount{.size = 0, .count = 0}));
+    EXPECT_EQ(sizeCountDeltas.at(_uuid1).state, DDLState::kCreated);
+}
+
+TEST_F(ExtractSizeCountDeltaForApplyOpsTest, FromMigrateCreateAfterDrop) {
+    // During shard migration, a collection can be dropped from a shard and then migrated back. The
+    // drop and create oplog entries share the same UUID. When the fromMigrate kCreate follows a
+    // kDrop for the same UUID, the entry should be reset to (0, 0) with
+    // DDLState::kDroppedAndRecreated.
+    const NamespaceString cmdNss = _nss1.getCommandNS();
+
+    const BSONObj dropOp = BSON("op" << "c"
+                                     << "ns" << cmdNss.ns_forTest() << "ui" << _uuid1 << "o"
+                                     << BSON("drop" << _nss1.coll()));
+    const BSONObj createFromMigrateOp =
+        BSON("op" << "c"
+                  << "ns" << cmdNss.ns_forTest() << "ui" << _uuid1 << "o"
+                  << BSON("create" << _nss1.coll()) << "fromMigrate" << true);
+    const BSONObj applyOpsCmd = BSON("applyOps" << BSON_ARRAY(dropOp << createFromMigrateOp));
+
+    const repl::OplogEntry applyOpsEntry{repl::DurableOplogEntry{repl::DurableOplogEntryParams{
+        .opTime = repl::OpTime(),
+        .opType = repl::OpTypeEnum::kCommand,
+        .nss = NamespaceString::kAdminCommandNamespace,
+        .oField = applyOpsCmd,
+        .wallClockTime = Date_t::now(),
+    }}};
+
+    SizeCountDeltas sizeCountDeltas;
+    extractSizeCountDeltasForApplyOps(applyOpsEntry, boost::none, sizeCountDeltas);
+
+    ASSERT_EQ(sizeCountDeltas.size(), 1u);
+    ASSERT_TRUE(sizeCountDeltas.contains(_uuid1));
+    EXPECT_EQ(sizeCountDeltas.at(_uuid1).sizeCount, (CollectionSizeCount{.size = 0, .count = 0}));
+    EXPECT_EQ(sizeCountDeltas.at(_uuid1).state, DDLState::kDroppedAndRecreated);
+}
+
+TEST_F(ExtractSizeCountDeltaForApplyOpsTest, FromMigrateCreateAfterDropThenInserts) {
+    // Subsequent inserts after the re-creation should accumulate correctly on the reset entry.
+    const NamespaceString cmdNss = _nss1.getCommandNS();
+    const BSONObj document = BSON("_id" << 0 << "x" << "hello");
+
+    const BSONObj dropOp = BSON("op" << "c"
+                                     << "ns" << cmdNss.ns_forTest() << "ui" << _uuid1 << "o"
+                                     << BSON("drop" << _nss1.coll()));
+    const BSONObj createFromMigrateOp =
+        BSON("op" << "c"
+                  << "ns" << cmdNss.ns_forTest() << "ui" << _uuid1 << "o"
+                  << BSON("create" << _nss1.coll()) << "fromMigrate" << true);
+    const BSONObj insertOp = BSON("op" << "i"
+                                       << "ns" << _nss1.ns_forTest() << "ui" << _uuid1 << "o"
+                                       << document << "m" << BSON("sz" << document.objsize()));
+    const BSONObj applyOpsCmd =
+        BSON("applyOps" << BSON_ARRAY(dropOp << createFromMigrateOp << insertOp));
+
+    const repl::OplogEntry applyOpsEntry{repl::DurableOplogEntry{repl::DurableOplogEntryParams{
+        .opTime = repl::OpTime(),
+        .opType = repl::OpTypeEnum::kCommand,
+        .nss = NamespaceString::kAdminCommandNamespace,
+        .oField = applyOpsCmd,
+        .wallClockTime = Date_t::now(),
+    }}};
+
+    SizeCountDeltas sizeCountDeltas;
+    extractSizeCountDeltasForApplyOps(applyOpsEntry, boost::none, sizeCountDeltas);
+
+    ASSERT_EQ(sizeCountDeltas.size(), 1u);
+    ASSERT_TRUE(sizeCountDeltas.contains(_uuid1));
+    EXPECT_EQ(sizeCountDeltas.at(_uuid1).sizeCount,
+              (CollectionSizeCount{.size = document.objsize(), .count = 1}));
+    EXPECT_EQ(sizeCountDeltas.at(_uuid1).state, DDLState::kDroppedAndRecreated);
+}
+
+TEST_F(ExtractSizeCountDeltaForApplyOpsTest, FromMigrateCreateWithPreExistingWritesFails) {
+    // A fromMigrate kCreate for a UUID that already has non-dropped state (e.g. from prior inserts
+    // without an intervening drop) should fail with massert 12554002.
+    const NamespaceString cmdNss = _nss1.getCommandNS();
+    const BSONObj document = BSON("_id" << 0);
+
+    const BSONObj insertOp = BSON("op" << "i"
+                                       << "ns" << _nss1.ns_forTest() << "ui" << _uuid1 << "o"
+                                       << document << "m" << BSON("sz" << document.objsize()));
+    const BSONObj createFromMigrateOp =
+        BSON("op" << "c"
+                  << "ns" << cmdNss.ns_forTest() << "ui" << _uuid1 << "o"
+                  << BSON("create" << _nss1.coll()) << "fromMigrate" << true);
+    const BSONObj applyOpsCmd = BSON("applyOps" << BSON_ARRAY(insertOp << createFromMigrateOp));
+
+    const repl::OplogEntry applyOpsEntry{repl::DurableOplogEntry{repl::DurableOplogEntryParams{
+        .opTime = repl::OpTime(),
+        .opType = repl::OpTypeEnum::kCommand,
+        .nss = NamespaceString::kAdminCommandNamespace,
+        .oField = applyOpsCmd,
+        .wallClockTime = Date_t::now(),
+    }}};
+
+    SizeCountDeltas sizeCountDeltas;
+    ASSERT_THROWS_CODE(
+        extractSizeCountDeltasForApplyOps(applyOpsEntry, boost::none, sizeCountDeltas),
+        DBException,
+        12554002);
+}
+
+TEST_F(ExtractSizeCountDeltaForApplyOpsTest,
+       CreateWithExplicitFromMigrateFalseAfterDropIsNotMigrate) {
+    // When a kCreate oplog entry has the fromMigrate field explicitly set to false, it must be
+    // treated as a normal (non-migrate) create.
+    const NamespaceString cmdNss = _nss1.getCommandNS();
+
+    const BSONObj dropOp = BSON("op" << "c"
+                                     << "ns" << cmdNss.ns_forTest() << "ui" << _uuid1 << "o"
+                                     << BSON("drop" << _nss1.coll()));
+    const BSONObj createWithFromMigrateFalseOp =
+        BSON("op" << "c"
+                  << "ns" << cmdNss.ns_forTest() << "ui" << _uuid1 << "o"
+                  << BSON("create" << _nss1.coll()) << "fromMigrate" << false);
+    const BSONObj applyOpsCmd =
+        BSON("applyOps" << BSON_ARRAY(dropOp << createWithFromMigrateFalseOp));
+
+    const repl::OplogEntry applyOpsEntry{repl::DurableOplogEntry{repl::DurableOplogEntryParams{
+        .opTime = repl::OpTime(),
+        .opType = repl::OpTypeEnum::kCommand,
+        .nss = NamespaceString::kAdminCommandNamespace,
+        .oField = applyOpsCmd,
+        .wallClockTime = Date_t::now(),
+    }}};
+
+    SizeCountDeltas sizeCountDeltas;
+    ASSERT_THROWS_CODE(
+        extractSizeCountDeltasForApplyOps(applyOpsEntry, boost::none, sizeCountDeltas),
+        DBException,
+        12054100);
+}
+
 // ===========================================================================
 // Mock oplog cursor for aggregateSizeCountDeltasInOplog() tests.
 // ===========================================================================
