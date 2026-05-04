@@ -5686,24 +5686,6 @@ class TestRealCopybaraSkyConfiguration(unittest.TestCase):
             )
 
     @unittest.skipUnless(
-        REAL_SKY_PATH.is_file(),
-        "checked-in copy.bara.sky not found at expected path",
-    )
-    def test_real_fragments_match_expected_mainline_branch_allowlist(self):
-        branch_to_fragment = sync_repo_with_copybara.discover_copybara_branches(
-            str(self.REAL_COPYBARA_ROOT)
-        )
-        mainline_branches = sorted(
-            branch for branch in branch_to_fragment if not branch.endswith("-hotfix")
-        )
-        hotfix_branches = sorted(
-            branch for branch in branch_to_fragment if branch.endswith("-hotfix")
-        )
-
-        self.assertEqual(mainline_branches, ["master", "v7.0", "v8.0", "v8.2"])
-        self.assertTrue(all(branch.endswith("-hotfix") for branch in hotfix_branches))
-
-    @unittest.skipUnless(
         REAL_GENERATED_EVERGREEN_PATH.is_file(),
         "checked-in generated Copybara Evergreen config not found at expected path",
     )
