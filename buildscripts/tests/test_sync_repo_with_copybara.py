@@ -399,7 +399,7 @@ class TestBranchFunctions(unittest.TestCase):
         result = self.mock_search(test_name, 2, 0)
         self.assertIsNone(result, f"{test_name}: SUCCESS!")
 
-    def test_prefers_newest_destination_commit_for_duplicate_origin_rev_id(self):
+    def test_duplicate_destination_origin_commits_fail_on_same_branch(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             source_dir = os.path.join(tmpdir, "source")
             destination_dir = os.path.join(tmpdir, "destination")
@@ -407,14 +407,64 @@ class TestBranchFunctions(unittest.TestCase):
             os.mkdir(destination_dir)
 
             private_hashes = TestBranchFunctions.create_mock_repo_commits(source_dir, 1)
-            public_hashes = TestBranchFunctions.create_mock_repo_commits(
+            TestBranchFunctions.create_mock_repo_commits(
                 destination_dir,
                 2,
                 [private_hashes[0], private_hashes[0]],
             )
 
-            result = sync_repo_with_copybara.find_matching_commit(source_dir, destination_dir)
-            self.assertEqual(result, public_hashes[-1])
+            with self.assertRaises(SystemExit):
+                sync_repo_with_copybara.find_matching_commit(source_dir, destination_dir)
+
+    def test_duplicate_destination_origin_commits_fail_outside_source_ref(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_dir = os.path.join(tmpdir, "source")
+            destination_dir = os.path.join(tmpdir, "destination")
+            os.mkdir(source_dir)
+            os.mkdir(destination_dir)
+
+            TestBranchFunctions.create_mock_repo_commits(source_dir, 1)
+            unrelated_private_hash = "a" * 40
+            TestBranchFunctions.create_mock_repo_commits(
+                destination_dir,
+                2,
+                [unrelated_private_hash, unrelated_private_hash],
+            )
+
+            with self.assertRaises(SystemExit):
+                sync_repo_with_copybara.find_matching_commit(source_dir, destination_dir)
+
+    def test_duplicate_destination_origin_commits_fail_on_unrelated_branches(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_dir = os.path.join(tmpdir, "source")
+            destination_dir = os.path.join(tmpdir, "destination")
+            os.mkdir(source_dir)
+            os.mkdir(destination_dir)
+
+            private_hashes = TestBranchFunctions.create_mock_repo_commits(source_dir, 1)
+            os.chdir(destination_dir)
+            sync_repo_with_copybara.run_command("git init")
+            sync_repo_with_copybara.run_command('git config --local user.email "test@example.com"')
+            sync_repo_with_copybara.run_command('git config --local user.name "Test User"')
+            sync_repo_with_copybara.run_command("git config --local commit.gpgsign false")
+
+            with open("test.txt", "w") as file:
+                file.write("master")
+            sync_repo_with_copybara.run_command("git add test.txt")
+            sync_repo_with_copybara.run_command(
+                f'git commit -m "master commit\nGitOrigin-RevId: {private_hashes[0]}"'
+            )
+
+            sync_repo_with_copybara.run_command("git checkout --orphan v8.2")
+            with open("test.txt", "w") as file:
+                file.write("release")
+            sync_repo_with_copybara.run_command("git add test.txt")
+            sync_repo_with_copybara.run_command(
+                f'git commit -m "release commit\nGitOrigin-RevId: {private_hashes[0]}"'
+            )
+
+            with self.assertRaises(SystemExit):
+                sync_repo_with_copybara.find_matching_commit(source_dir, destination_dir)
 
     def test_find_matching_commit_pair_returns_source_and_destination(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -439,6 +489,43 @@ class TestBranchFunctions(unittest.TestCase):
                     destination_commit=public_hashes[-1],
                 ),
             )
+
+    def test_find_matching_commit_pair_searches_all_destination_branches(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_dir = os.path.join(tmpdir, "source")
+            destination_dir = os.path.join(tmpdir, "destination")
+            os.mkdir(source_dir)
+            os.mkdir(destination_dir)
+
+            private_hashes = TestBranchFunctions.create_mock_repo_commits(source_dir, 3)
+            public_hashes = TestBranchFunctions.create_mock_repo_commits(
+                destination_dir,
+                1,
+                [private_hashes[0]],
+            )
+
+            os.chdir(destination_dir)
+            sync_repo_with_copybara.run_command("git checkout -b v8.2")
+            with open("test.txt", "a") as file:
+                file.write("release")
+            sync_repo_with_copybara.run_command("git add test.txt")
+            sync_repo_with_copybara.run_command(
+                f'git commit -m "release branch commit\nGitOrigin-RevId: {private_hashes[1]}"'
+            )
+            release_public_hash = sync_repo_with_copybara.run_command(
+                'git log --pretty=format:"%H" -1'
+            )
+
+            result = sync_repo_with_copybara.find_matching_commit_pair(source_dir, destination_dir)
+
+            self.assertEqual(
+                result,
+                sync_repo_with_copybara.MatchingCommit(
+                    source_commit=private_hashes[1],
+                    destination_commit=release_public_hash,
+                ),
+            )
+            self.assertNotEqual(result.destination_commit, public_hashes[0])
 
     def test_branch_exists(self):
         """Perform a test to check that the branch exists in a repository."""
